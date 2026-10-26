@@ -1,8 +1,9 @@
 
 import re
+import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 import pandas as pd
@@ -10,10 +11,9 @@ import streamlit as st
 from bs4 import BeautifulSoup
 
 
-# ==================================================
+# =========================================================
 # 웹소설 통합 랭킹 TOP 100
-# 한국 시간 기준 어제 날짜 자동 계산
-# ==================================================
+# =========================================================
 
 st.set_page_config(
     page_title="웹소설 통합 랭킹 TOP 100",
@@ -34,7 +34,7 @@ PLATFORMS = [
 
 PERIODS = ["일간", "주간", "월간"]
 
-# 플랫폼별 공식 랭킹 주소
+# 플랫폼별 공개 랭킹 페이지
 RANKING_URLS = {
     "네이버시리즈": {
         "일간": "https://series.naver.com/novel/top100List.series?categoryCode=ALL&rankingTypeCode=DAILY",
@@ -42,9 +42,9 @@ RANKING_URLS = {
         "월간": "https://series.naver.com/novel/top100List.series?categoryCode=ALL&rankingTypeCode=MONTHLY",
     },
     "카카오페이지": {
-        "일간": "https://page.kakao.com/landing/ranking/16/0?ranking_type=daily",
-        "주간": "https://page.kakao.com/landing/ranking/16/0?ranking_type=weekly",
-        "월간": "https://page.kakao.com/landing/ranking/16/0?ranking_type=monthly",
+        "일간": "https://page.kakao.com/landing/ranking/0",
+        "주간": "https://page.kakao.com/landing/ranking/0",
+        "월간": "https://page.kakao.com/landing/ranking/0",
     },
     "문피아": {
         "일간": "https://www.munpia.com/best/today",
@@ -68,15 +68,54 @@ HEADERS = {
     "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
 }
 
+# 작품 제목으로 취급하지 않을 메뉴 및 이벤트 문구
+EXCLUDED_TITLES = {
+    "타임딜",
+    "매일10시무료",
+    "무료",
+    "무료충전",
+    "무료이용권",
+    "프리패스",
+    "인기 단행본",
+    "TOP 100",
+    "웹소설",
+    "웹툰",
+    "로그인",
+    "회원가입",
+    "고객센터",
+    "공지사항",
+    "이벤트",
+    "검색",
+    "홈",
+    "랭킹",
+    "전체",
+    "더보기",
+    "이용약관",
+    "개인정보처리방침",
+    "회사소개",
+    "오늘의 베스트",
+    "주간 베스트",
+    "월간 베스트",
+}
 
-# ==================================================
+# 제목에 다음과 같은 메뉴 문구가 포함된 경우도 제외합니다.
+EXCLUDED_PREFIXES = (
+    "타임딜",
+    "매일10시무료",
+    "무료충전",
+    "로그인",
+    "회원가입",
+)
+
+
+# =========================================================
 # 화면 디자인
-# ==================================================
+# =========================================================
 
 st.markdown("""
 <style>
 .stApp {
-    background-color: #fffaf2;
+    background: #fffaf2;
 }
 h1 {
     color: #59412e;
@@ -88,55 +127,34 @@ div[data-testid="stMetric"] {
     border-radius: 12px;
     padding: 12px;
 }
-div[data-testid="stVerticalBlockBorderWrapper"] {
-    border-color: #eee0cd;
-    border-radius: 12px;
-}
-a {
-    text-decoration: none;
-}
 </style>
 """, unsafe_allow_html=True)
 
 
-# ==================================================
-# 왼쪽 사이드바: 필요한 설정만 표시
-# ==================================================
+# =========================================================
+# 사이드바 설정
+# =========================================================
 
 with st.sidebar:
     st.title("📚 웹소설 랭킹")
 
     with st.expander("⚙️ 조회 설정", expanded=True):
-        platform = st.selectbox(
-            "플랫폼",
-            PLATFORMS,
-        )
-
-        period = st.radio(
-            "기간",
-            PERIODS,
-            horizontal=True,
-        )
+        platform = st.selectbox("플랫폼", PLATFORMS)
+        period = st.radio("기간", PERIODS, horizontal=True)
 
         count = st.select_slider(
-            "표시 작품 수",
+            "표시 개수",
             options=[10, 20, 50, 100],
             value=100,
             format_func=lambda n: f"TOP {n}",
         )
 
-    st.caption(
-        f"한국 시간 기준 어제: {YESTERDAY:%Y-%m-%d}"
-    )
+    st.caption(f"한국 시간 기준 어제: {YESTERDAY:%Y-%m-%d}")
 
-    refresh = st.button(
-        "🔄 새로고침",
-        use_container_width=True,
-    )
+    refresh = st.button("🔄 새로고침", use_container_width=True)
 
     st.divider()
-
-    st.caption("작품 제목을 누르면 해당 플랫폼으로 이동합니다.")
+    st.caption("검증된 작품 제목만 표시합니다.")
 
 
 if refresh:
@@ -144,13 +162,12 @@ if refresh:
     st.rerun()
 
 
-# ==================================================
-# 웹페이지 가져오기
-# ==================================================
+# =========================================================
+# 웹페이지 요청
+# =========================================================
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_html(url):
-    """웹페이지 HTML을 가져옵니다."""
     response = requests.get(
         url,
         headers=HEADERS,
@@ -161,115 +178,313 @@ def fetch_html(url):
     return response.text
 
 
-# ==================================================
-# 작품 목록 추출
-# ==================================================
+# =========================================================
+# 제목 정리 및 검증
+# =========================================================
 
-def parse_ranking(html, platform_name, source_url):
+def clean_title(title):
+    """제목의 공백과 불필요한 문자를 정리합니다."""
+    if not title:
+        return ""
+
+    title = re.sub(r"\s+", " ", title).strip()
+    title = title.replace("\u200b", "").replace("\ufeff", "")
+    title = title.strip(" |·•\n\t")
+
+    return title
+
+
+def is_valid_title(title):
     """
-    공개 페이지에서 작품 링크를 추출합니다.
-
-    순위가 별도 텍스트로 제공되지 않는 페이지에서는
-    페이지에 나타나는 작품 순서를 이용합니다.
-    메뉴나 일반 링크는 작품으로 취급하지 않습니다.
+    제목이 실제 작품명 후보인지 확인합니다.
+    메뉴와 이벤트 문구는 작품으로 등록하지 않습니다.
     """
-    soup = BeautifulSoup(html, "html.parser")
+    title = clean_title(title)
 
+    if len(title) < 2 or len(title) > 100:
+        return False
+
+    if title in EXCLUDED_TITLES:
+        return False
+
+    if any(title.startswith(prefix) for prefix in EXCLUDED_PREFIXES):
+        return False
+
+    if title.lower().startswith(("http://", "https://", "javascript:")):
+        return False
+
+    # 메뉴 이름만 조합된 제목은 제외합니다.
+    if title in {"일간", "주간", "월간", "실시간", "무료", "유료"}:
+        return False
+
+    return True
+
+
+def get_title_from_link(a):
+    """
+    링크 안의 텍스트를 먼저 확인하고,
+    없으면 제목 속성이나 이미지 대체 텍스트를 확인합니다.
+    """
+    candidates = [
+        a.get_text(" ", strip=True),
+        a.get("title", ""),
+        a.get("aria-label", ""),
+    ]
+
+    img = a.find("img")
+    if img:
+        candidates.append(img.get("alt", ""))
+
+    for candidate in candidates:
+        candidate = clean_title(candidate)
+
+        if is_valid_title(candidate):
+            return candidate
+
+    return ""
+
+
+def get_rank_from_text(text):
+    """원본 페이지의 텍스트에서 명시적인 순위만 추출합니다."""
+    if not text:
+        return None
+
+    patterns = [
+        r"(?:^|\s)(100|[1-9]?\d)\s*위(?:\s|$)",
+        r"^\s*(100|[1-9]?\d)\s*$",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            rank = int(match.group(1))
+            if 1 <= rank <= 100:
+                return rank
+
+    return None
+
+
+# =========================================================
+# 네이버시리즈 작품 추출
+# =========================================================
+
+def parse_naver(soup, source_url):
     results = []
     seen = set()
 
-    excluded_titles = {
-        "로그인", "회원가입", "고객센터", "공지사항",
-        "이용약관", "개인정보처리방침", "회사소개",
-        "검색", "홈", "이벤트", "웹소설", "웹툰",
-        "무료충전", "더보기", "랭킹", "전체",
-    }
+    for a in soup.find_all("a", href=True):
+        href = urljoin(source_url, a["href"])
+        parsed = urlparse(href)
+
+        # 네이버시리즈 웹소설 작품 상세 링크만 허용합니다.
+        if parsed.netloc not in {
+            "series.naver.com",
+            "m.series.naver.com",
+        }:
+            continue
+
+        if not re.search(r"/novel/(?:detail|content)", parsed.path):
+            continue
+
+        title = get_title_from_link(a)
+
+        if not title or href in seen:
+            continue
+
+        # 부모 영역에서 원본 순위가 있는지 확인합니다.
+        parent = a
+        rank = None
+
+        for _ in range(5):
+            if parent.parent is None:
+                break
+
+            parent = parent.parent
+            rank = get_rank_from_text(
+                parent.get_text(" ", strip=True)[:250]
+            )
+
+            if rank is not None:
+                break
+
+        seen.add(href)
+
+        results.append({
+            "순위": rank,
+            "작품명": title,
+            "플랫폼": "네이버시리즈",
+            "작품 링크": href,
+        })
+
+    return deduplicate_results(results)
+
+
+# =========================================================
+# 카카오페이지 작품 추출
+# =========================================================
+
+def parse_kakao(soup, source_url):
+    results = []
+    seen = set()
 
     for a in soup.find_all("a", href=True):
-        title = a.get_text(" ", strip=True)
-        link = urljoin(source_url, a["href"])
+        href = urljoin(source_url, a["href"])
+        parsed = urlparse(href)
 
-        if not title or len(title) < 2 or len(title) > 90:
+        if parsed.netloc != "page.kakao.com":
             continue
 
-        if title in excluded_titles:
+        # 실제 작품 상세 페이지에 해당하는 링크만 허용합니다.
+        match = re.search(r"/content/(\d+)", parsed.path)
+
+        if not match:
             continue
 
-        if any(word in title for word in excluded_titles):
+        title = get_title_from_link(a)
+
+        if not title or href in seen:
             continue
 
-        # 플랫폼별 작품 링크인지 확인합니다.
-        if platform_name == "네이버시리즈":
-            if "series.naver.com/novel/" not in link:
-                continue
+        seen.add(href)
 
-        elif platform_name == "카카오페이지":
-            if "page.kakao.com" not in link:
-                continue
+        parent = a.parent
+        rank = None
 
-            # 작품 상세 주소가 아닌 일반 페이지는 제외합니다.
-            if "/content/" not in link and "/viewer/" not in link:
-                continue
+        for _ in range(4):
+            if parent is None:
+                break
 
-        elif platform_name == "문피아":
-            if "munpia.com" not in link:
-                continue
+            rank = get_rank_from_text(
+                parent.get_text(" ", strip=True)[:250]
+            )
 
-            if "/best/" in link or "/help/" in link:
-                continue
+            if rank is not None:
+                break
+
+            parent = parent.parent
+
+        results.append({
+            "순위": rank,
+            "작품명": title,
+            "플랫폼": "카카오페이지",
+            "작품 링크": href,
+        })
+
+    return deduplicate_results(results)
+
+
+# =========================================================
+# 문피아 작품 추출
+# =========================================================
+
+def parse_munpia(soup, source_url):
+    results = []
+    seen = set()
+
+    for a in soup.find_all("a", href=True):
+        href = urljoin(source_url, a["href"])
+        parsed = urlparse(href)
+
+        if parsed.netloc not in {"www.munpia.com", "munpia.com"}:
+            continue
+
+        # 베스트 메뉴나 일반 페이지 링크는 제외합니다.
+        if "/novel/" not in parsed.path:
+            continue
+
+        title = get_title_from_link(a)
+
+        if not title or href in seen:
+            continue
+
+        seen.add(href)
+
+        parent = a.parent
+        rank = None
+
+        for _ in range(5):
+            if parent is None:
+                break
+
+            rank = get_rank_from_text(
+                parent.get_text(" ", strip=True)[:300]
+            )
+
+            if rank is not None:
+                break
+
+            parent = parent.parent
+
+        results.append({
+            "순위": rank,
+            "작품명": title,
+            "플랫폼": "문피아",
+            "작품 링크": href,
+        })
+
+    return deduplicate_results(results)
+
+
+# =========================================================
+# 중복 작품 제거
+# =========================================================
+
+def deduplicate_results(results):
+    """같은 작품 링크가 여러 번 나오면 하나만 남깁니다."""
+    output = []
+    seen = set()
+
+    for row in results:
+        link = row["작품 링크"]
 
         if link in seen:
             continue
 
+        if not is_valid_title(row["작품명"]):
+            continue
+
         seen.add(link)
+        output.append(row)
 
-        # 주변 문구에서 실제 표시된 순위가 있으면 사용합니다.
-        parent_text = (
-            a.parent.get_text(" ", strip=True)
-            if a.parent else ""
-        )
+    # 원본 순위가 확인된 항목을 먼저 표시합니다.
+    ranked = [x for x in output if x["순위"] is not None]
+    unranked = [x for x in output if x["순위"] is None]
 
-        match = re.search(
-            r"(?:^|\s)(100|[1-9]?\d)(?:위|\s)",
-            parent_text,
-        )
+    ranked.sort(key=lambda x: x["순위"])
 
-        results.append({
-            "원본 순위": int(match.group(1)) if match else None,
-            "작품명": title,
-            "플랫폼": platform_name,
-            "작품 링크": link,
-        })
-
-        if len(results) >= 100:
-            break
-
-    # 순위가 확인된 작품은 원래 순위순으로 정렬합니다.
-    # 나머지는 페이지에서 나타난 순서를 유지합니다.
-    ranked = [r for r in results if r["원본 순위"] is not None]
-    unranked = [r for r in results if r["원본 순위"] is None]
-
-    ranked.sort(key=lambda r: r["원본 순위"])
-
-    # 원본 순위가 없는 항목에 가짜 순위를 붙이지 않습니다.
     return ranked + unranked
 
 
+# =========================================================
+# 플랫폼별 조회
+# =========================================================
+
 def get_ranking(platform_name, selected_period):
-    """플랫폼별 공개 랭킹 페이지를 조회합니다."""
     url = RANKING_URLS[platform_name][selected_period]
 
     try:
         html = fetch_html(url)
-        rows = parse_ranking(html, platform_name, url)
+        soup = BeautifulSoup(html, "html.parser")
+
+        if platform_name == "네이버시리즈":
+            rows = parse_naver(soup, url)
+
+        elif platform_name == "카카오페이지":
+            rows = parse_kakao(soup, url)
+
+        elif platform_name == "문피아":
+            rows = parse_munpia(soup, url)
+
+        else:
+            rows = []
 
         if not rows:
             return [], (
-                "작품 목록을 추출하지 못했습니다. "
-                "사이트의 데이터 구조 또는 접근 방식 확인이 필요합니다."
+                "실제 작품 상세 링크를 확인하지 못했습니다. "
+                "페이지가 JavaScript로 렌더링되거나 구조가 바뀌었을 수 있습니다."
             )
 
-        return rows, None
+        return rows[:100], None
 
     except requests.exceptions.Timeout:
         return [], "사이트 응답 시간이 초과되었습니다."
@@ -284,27 +499,21 @@ def get_ranking(platform_name, selected_period):
         return [], f"데이터 처리 오류: {e}"
 
 
-# ==================================================
+# =========================================================
 # 메인 화면
-# ==================================================
+# =========================================================
 
 st.title("📚 웹소설 통합 랭킹 TOP 100")
 
 st.caption(
-    f"{YESTERDAY:%Y년 %m월 %d일} 기준 날짜 · "
+    f"한국 시간 기준 날짜: {YESTERDAY:%Y년 %m월 %d일} · "
     f"{platform} · {period}"
 )
 
 st.info(
-    "날짜는 한국 시간 기준 어제로 자동 계산됩니다. "
-    "단, 플랫폼이 과거 순위를 제공하지 않으면 현재 페이지에서 "
-    "어제 당시 순위를 복원할 수는 없습니다."
+    "날짜는 한국 시간 기준 어제로 계산합니다. "
+    "단, 현재 페이지에 표시되는 순위가 어제의 순위라는 뜻은 아닙니다."
 )
-
-
-# ==================================================
-# 순위 조회 및 표시
-# ==================================================
 
 platforms_to_fetch = (
     ["네이버시리즈", "카카오페이지", "문피아"]
@@ -315,71 +524,63 @@ platforms_to_fetch = (
 all_rows = []
 errors = []
 
-with st.spinner("공개 랭킹을 확인하고 있습니다..."):
+with st.spinner("실제 작품 제목과 링크를 확인하고 있습니다..."):
     for name in platforms_to_fetch:
         rows, error = get_ranking(name, period)
-
         all_rows.extend(rows)
 
         if error:
             errors.append((name, error))
 
 
-# 수집 실패한 플랫폼은 공식 사이트 링크를 보여줍니다.
+# =========================================================
+# 결과 출력
+# =========================================================
+
 if errors:
-    with st.expander("⚠️ 조회가 필요한 플랫폼", expanded=True):
+    with st.expander("⚠️ 조회 상태 및 공식 사이트", expanded=True):
         for name, error in errors:
             st.warning(f"{name}: {error}")
-            st.markdown(
-                f"[{name} 공식 사이트 열기]({HOME_URLS[name]})"
-            )
 
+            st.markdown(
+                f"[{name} 공식 랭킹 페이지 열기]({RANKING_URLS[name][period]})"
+            )
 
 if not all_rows:
     st.warning(
-        "표시할 작품을 찾지 못했습니다. "
-        "공식 사이트에 접속해 확인해 주세요."
+        "표시할 작품을 확인하지 못했습니다. "
+        "잘못된 제목을 임의로 표시하지 않았습니다."
     )
 
 else:
     df = pd.DataFrame(all_rows)
 
-    # 한 플랫폼에서는 원래 순위순으로 보여주고,
-    # 전체 플랫폼에서는 각 플랫폼의 결과를 합쳐 보여줍니다.
+    # 같은 플랫폼 내에서는 원본 순위가 확인된 작품을 먼저 표시합니다.
+    # 전체 플랫폼에서는 플랫폼별 원래 순위를 그대로 보존합니다.
     if platform != "전체 플랫폼":
         df = df.sort_values(
-            by="원본 순위",
+            "순위",
             na_position="last",
         )
 
     df = df.head(count).copy()
 
-    # 요약 카드
     col1, col2, col3 = st.columns(3)
-
-    col1.metric("표시 작품", f"{len(df)}개")
+    col1.metric("확인한 작품", f"{len(df)}개")
     col2.metric("플랫폼", f"{len(platforms_to_fetch)}개")
-    col3.metric("조회 기간", period)
+    col3.metric("기간", period)
 
     st.divider()
 
-    # 원래 순위가 없는 작품은 페이지상 위치를 임시 번호로 표시하지 않습니다.
-    display_df = df[[
-        "원본 순위",
-        "작품명",
-        "플랫폼",
-        "작품 링크",
-    ]].copy()
+    # 순위 번호를 확인하지 못한 작품에 가짜 순위를 부여하지 않습니다.
+    display_df = df.copy()
 
-    display_df["원본 순위"] = display_df["원본 순위"].apply(
-        lambda x: f"{int(x)}위" if pd.notna(x) else "순위 확인 필요"
+    display_df["순위"] = display_df["순위"].apply(
+        lambda x: f"{int(x)}위" if pd.notna(x) else "확인 필요"
     )
 
-    display_df.columns = [
-        "순위",
-        "작품명",
-        "플랫폼",
-        "작품 링크",
+    display_df = display_df[
+        ["순위", "작품명", "플랫폼", "작품 링크"]
     ]
 
     st.dataframe(
@@ -389,29 +590,29 @@ else:
         height=650,
         column_config={
             "작품 링크": st.column_config.LinkColumn(
-                "바로가기",
+                "작품 바로가기",
                 display_text="작품 보기 ↗",
             )
         },
     )
 
     st.caption(
-        "전체 플랫폼 보기는 각 사이트의 결과를 함께 표시합니다. "
-        "서로 다른 플랫폼의 순위를 합산한 통합 순위는 아닙니다."
+        "전체 플랫폼은 각 플랫폼의 순위를 함께 보여줍니다. "
+        "서로 다른 플랫폼의 순위를 합산해 새 순위를 만들지는 않습니다."
     )
 
 
-# ==================================================
-# 하단 도움말
-# ==================================================
+# =========================================================
+# 접어서 볼 수 있는 안내
+# =========================================================
 
-with st.expander("데이터 기준 및 안내"):
+with st.expander("데이터 수집 안내"):
     st.markdown(
         """
-        - **일간·주간·월간:** 선택한 플랫폼의 공개 랭킹 주소를 조회합니다.
-        - **어제:** 한국 시간 기준으로 자동 계산합니다.
-        - **TOP 100:** 실제로 추출할 수 있는 작품까지만 표시합니다.
-        - **과거 순위:** 과거 순위 기록이 제공되지 않으면 복원할 수 없습니다.
-        - **수집 오류:** 플랫폼의 페이지 구조 변경이나 동적 로딩 때문에 발생할 수 있습니다.
+        - 메뉴·이벤트 문구는 작품명 후보에서 제외합니다.
+        - 작품 상세 페이지 주소가 확인되는 링크만 사용합니다.
+        - 순위 번호가 확인되지 않으면 임의의 순위를 붙이지 않습니다.
+        - 사이트의 JavaScript 렌더링이나 접근 제한으로 수집이 실패할 수 있습니다.
+        - 과거 날짜의 정확한 순위는 별도 과거 기록이 필요합니다.
         """
     )

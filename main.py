@@ -2,21 +2,18 @@
 # main.py
 # ============================================================
 # 세계 자연재해 실시간 모니터링 대시보드
-# 초보자도 이해하기 쉽도록 한국어 주석을 추가했습니다.
 #
 # 주요 기능
-# 1. UTC 시계와 날짜를 초 단위로 표시
-# 2. 마우스를 올리면 재난 종류 메뉴 표시
-# 3. USGS 지진 데이터와 GDACS 국제 재난 경보 수집
-# 4. Google 뉴스 RSS를 통한 재난 기사 검색
-# 5. 기사에 공개된 피해 정보 표시
-# 6. 자료 수집 실패 시 오류 안내 및 재시도
+# 1. UTC 시계를 화면 중앙에 크게 표시 (초 단위 갱신)
+# 2. 날짜를 오른쪽에 표시
+# 3. 시계에 마우스를 올리면 재난 유형 메뉴 표시
+# 4. USGS 지진 데이터 및 GDACS 국제 재난 경보
+# 5. Google 뉴스 RSS를 통한 재난 기사 검색
+# 6. 피해 수치 표시 및 오류 처리
 # ============================================================
 
 import re
 import html
-import json
-import time
 import logging
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -41,19 +38,15 @@ st.set_page_config(
 logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger(__name__)
 
-# 브라우저가 접근할 수 있는 공개 데이터 제공처
 USGS_URL = (
     "https://earthquake.usgs.gov/earthquakes/feed/v1.0/"
     "summary/all_day.geojson"
 )
 
 GDACS_URL = "https://www.gdacs.org/xml/rss.xml"
+GOOGLE_NEWS_URL = "https://news.google.com/rss/search"
 
-GOOGLE_NEWS_URL = (
-    "https://news.google.com/rss/search"
-)
-
-# 재난 유형별 검색어
+# 재난 유형별 뉴스 검색어
 HAZARDS = {
     "전체": "natural disaster OR earthquake OR flood OR wildfire",
     "태풍": "typhoon OR tropical cyclone OR hurricane",
@@ -68,7 +61,6 @@ HAZARDS = {
     "산사태": "landslide OR mudslide",
 }
 
-# 뉴스 검색 결과에 표시할 재난 유형별 이모지
 HAZARD_ICONS = {
     "전체": "🌍",
     "태풍": "🌀",
@@ -83,18 +75,18 @@ HAZARD_ICONS = {
     "산사태": "⛰️",
 }
 
-# 최신 기사 및 재난 자료를 주기적으로 다시 가져옵니다.
 CACHE_SECONDS = 300
 HTTP_TIMEOUT = 12
 
-# 재난 데이터 요청 시 사용하는 공통 HTTP 설정
 HEADERS = {
     "User-Agent": (
         "WorldDisasterDashboard/1.0 "
         "(educational Streamlit application)"
     ),
-    "Accept": "application/json, application/xml, text/xml, "
-              "application/rss+xml, */*",
+    "Accept": (
+        "application/json, application/xml, text/xml, "
+        "application/rss+xml, */*"
+    ),
 }
 
 
@@ -113,8 +105,11 @@ st.markdown(
 
     .stApp {
         background:
-            radial-gradient(ellipse at 0% 0%,
-                rgba(28, 91, 133, 0.17), transparent 45%),
+            radial-gradient(
+                ellipse at 0% 0%,
+                rgba(28, 91, 133, 0.17),
+                transparent 45%
+            ),
             #080d16;
         color: #eaf0f8;
     }
@@ -160,7 +155,8 @@ st.markdown(
 
     .metric-card {
         background: linear-gradient(
-            145deg, rgba(25, 39, 57, 0.95),
+            145deg,
+            rgba(25, 39, 57, 0.95),
             rgba(13, 22, 35, 0.95)
         );
         border: 1px solid #26384c;
@@ -272,22 +268,23 @@ st.markdown(
 
 
 # ------------------------------------------------------------
-# 3. UTC 시계 및 마우스 오버 메뉴
+# 3. 상단 UTC 시계
 # ------------------------------------------------------------
 
 def render_utc_header(selected_hazard):
     """
-    브라우저 JavaScript로 UTC 시계를 1초마다 갱신합니다.
+    화면 중앙에 큰 UTC 시계를 표시합니다.
+    오른쪽에는 UTC 날짜를 표시합니다.
+    시계에 마우스를 올리면 재난 유형 메뉴가 나타납니다.
 
-    시계와 날짜는 브라우저의 현재 시각을 UTC로 변환합니다.
-    재난 메뉴는 시계 영역에 마우스를 올리면 나타납니다.
-    메뉴를 선택하면 URL의 hazard 값이 바뀌고 앱이 다시 열립니다.
+    시계는 브라우저에서 1초마다 갱신됩니다.
     """
 
     menu_items = ""
 
     for name in HAZARDS:
         url = "?hazard=" + quote(name)
+
         active_style = (
             "background:#193b55;color:#8bd6ff;"
             if name == selected_hazard
@@ -308,181 +305,272 @@ def render_utc_header(selected_hazard):
     <html>
     <head>
     <meta charset="utf-8">
+
     <style>
-      * {{ box-sizing: border-box; }}
-
-      body {{
-        margin: 0;
-        background: transparent;
-        color: #f4f8ff;
-        font-family: Arial, sans-serif;
-      }}
-
-      .topbar {{
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        background: linear-gradient(100deg, #101c2b, #0c1421);
-        border: 1px solid #263c52;
-        border-radius: 14px;
-        padding: 13px 19px;
-        min-height: 86px;
-      }}
-
-      .clock-area {{
-        position: relative;
-        display: inline-block;
-        min-width: 0;
-      }}
-
-      .clock-label {{
-        color: #80cfff;
-        font-size: 10px;
-        letter-spacing: 2px;
-        font-weight: 800;
-        margin-bottom: 6px;
-      }}
-
-      #clock {{
-        font-size: clamp(23px, 3.3vw, 36px);
-        font-weight: 800;
-        letter-spacing: 1px;
-        font-variant-numeric: tabular-nums;
-        white-space: nowrap;
-      }}
-
-      .utc {{
-        display: inline-block;
-        color: #8ca6c0;
-        font-size: 10px;
-        margin-left: 6px;
-        letter-spacing: 0;
-        font-weight: 500;
-      }}
-
-      .date-area {{
-        text-align: right;
-        flex-shrink: 0;
-      }}
-
-      .date-label {{
-        color: #8297ad;
-        font-size: 10px;
-        letter-spacing: 2px;
-        margin-bottom: 8px;
-      }}
-
-      #date {{
-        font-size: 14px;
-        font-weight: 700;
-        white-space: nowrap;
-      }}
-
-      .hover-menu {{
-        display: none;
-        position: absolute;
-        z-index: 99999;
-        top: calc(100% + 8px);
-        left: 0;
-        width: 215px;
-        max-height: 340px;
-        overflow-y: auto;
-        padding: 8px;
-        background: #101d2c;
-        border: 1px solid #38536d;
-        border-radius: 12px;
-        box-shadow: 0 12px 35px rgba(0,0,0,.45);
-      }}
-
-      .clock-area:hover .hover-menu,
-      .clock-area:focus-within .hover-menu {{
-        display: block;
-      }}
-
-      .hover-menu::before {{
-        content: "재난 유형 선택";
-        display: block;
-        color: #8ca6c0;
-        font-size: 11px;
-        padding: 8px 10px;
-      }}
-
-      .hazard-option {{
-        display: block;
-        padding: 10px;
-        border-radius: 7px;
-        color: #dbe8f6 !important;
-        font-size: 13px;
-        text-decoration: none !important;
-      }}
-
-      .hazard-option:hover {{
-        background: #1a3046;
-        color: #8bd6ff !important;
-      }}
-
-      @media(max-width: 480px) {{
-        .topbar {{ padding: 11px; }}
-        #clock {{ font-size: 21px; }}
-        .utc {{ font-size: 9px; margin-left: 2px; }}
-        #date {{ font-size: 11px; }}
-        .date-label {{ font-size: 9px; }}
-      }}
-    </style>
-    </head>
-    <body>
-      <div class="topbar">
-        <div class="clock-area" tabindex="0">
-          <div class="clock-label">GLOBAL DISASTER WATCH</div>
-          <div>
-            <span id="clock">00:00:00</span>
-            <span class="utc">UTC 기준</span>
-          </div>
-          <div class="hover-menu">{menu_items}</div>
-        </div>
-
-        <div class="date-area">
-          <div class="date-label">UTC DATE</div>
-          <div id="date">0000-00-00</div>
-        </div>
-      </div>
-
-      <script>
-        function updateUTC() {{
-          const now = new Date();
-
-          const hh = String(now.getUTCHours()).padStart(2, '0');
-          const mm = String(now.getUTCMinutes()).padStart(2, '0');
-          const ss = String(now.getUTCSeconds()).padStart(2, '0');
-
-          const yyyy = now.getUTCFullYear();
-          const mo = String(now.getUTCMonth() + 1).padStart(2, '0');
-          const dd = String(now.getUTCDate()).padStart(2, '0');
-
-          document.getElementById('clock').textContent =
-            hh + ':' + mm + ':' + ss;
-
-          document.getElementById('date').textContent =
-            yyyy + '-' + mo + '-' + dd;
+        * {{
+            box-sizing: border-box;
         }}
 
-        updateUTC();
-        setInterval(updateUTC, 1000);
-      </script>
+        body {{
+            margin: 0;
+            background: transparent;
+            color: #f4f8ff;
+            font-family: Arial, sans-serif;
+        }}
+
+        /* 세 영역을 만들어 시계를 정확히 가운데에 배치 */
+        .topbar {{
+            display: grid;
+            grid-template-columns: 1fr auto 1fr;
+            align-items: center;
+            gap: 12px;
+            background: linear-gradient(
+                100deg, #101c2b, #0c1421
+            );
+            border: 1px solid #263c52;
+            border-radius: 14px;
+            padding: 18px 24px;
+            min-height: 120px;
+            width: 100%;
+        }}
+
+        /* 중앙의 시계 */
+        .clock-area {{
+            position: relative;
+            display: inline-block;
+            grid-column: 2;
+            text-align: center;
+            min-width: 0;
+        }}
+
+        .clock-label {{
+            color: #80cfff;
+            font-size: 12px;
+            letter-spacing: 3px;
+            font-weight: 800;
+            margin-bottom: 10px;
+        }}
+
+        /* 시각을 크게 표시 */
+        #clock {{
+            font-size: clamp(38px, 5vw, 58px);
+            font-weight: 800;
+            letter-spacing: 2px;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+            color: #f4f8ff;
+            text-shadow: 0 0 22px rgba(75, 177, 255, 0.12);
+        }}
+
+        .utc {{
+            display: inline-block;
+            color: #8ca6c0;
+            font-size: 12px;
+            margin-left: 8px;
+            letter-spacing: 0;
+            font-weight: 500;
+            white-space: nowrap;
+        }}
+
+        /* 오른쪽 날짜 */
+        .date-area {{
+            grid-column: 3;
+            text-align: right;
+            justify-self: end;
+            min-width: 0;
+        }}
+
+        .date-label {{
+            color: #8297ad;
+            font-size: 11px;
+            letter-spacing: 2px;
+            margin-bottom: 8px;
+        }}
+
+        #date {{
+            color: #f4f8ff;
+            font-size: 16px;
+            font-weight: 700;
+            white-space: nowrap;
+        }}
+
+        /* 마우스를 올리면 메뉴 표시 */
+        .hover-menu {{
+            display: none;
+            position: absolute;
+            z-index: 99999;
+            top: calc(100% + 8px);
+            left: 50%;
+            transform: translateX(-50%);
+            width: 215px;
+            max-height: 340px;
+            overflow-y: auto;
+            padding: 8px;
+            background: #101d2c;
+            border: 1px solid #38536d;
+            border-radius: 12px;
+            box-shadow: 0 12px 35px rgba(0,0,0,.45);
+            text-align: left;
+        }}
+
+        .clock-area:hover .hover-menu,
+        .clock-area:focus-within .hover-menu {{
+            display: block;
+        }}
+
+        .hover-menu::before {{
+            content: "재난 유형 선택";
+            display: block;
+            color: #8ca6c0;
+            font-size: 11px;
+            padding: 8px 10px;
+        }}
+
+        .hazard-option {{
+            display: block;
+            padding: 10px;
+            border-radius: 7px;
+            color: #dbe8f6 !important;
+            font-size: 13px;
+            text-decoration: none !important;
+        }}
+
+        .hazard-option:hover {{
+            background: #1a3046;
+            color: #8bd6ff !important;
+        }}
+
+        /* 휴대전화에서는 시계와 날짜가 겹치지 않도록 조정 */
+        @media(max-width: 600px) {{
+            .topbar {{
+                grid-template-columns: minmax(0, 1fr) auto;
+                padding: 14px 10px;
+                gap: 6px;
+                min-height: 100px;
+            }}
+
+            .clock-area {{
+                grid-column: 1;
+                text-align: left;
+            }}
+
+            #clock {{
+                font-size: clamp(27px, 7vw, 38px);
+                letter-spacing: 0;
+            }}
+
+            .utc {{
+                font-size: 10px;
+                margin-left: 3px;
+            }}
+
+            .clock-label {{
+                font-size: 9px;
+                letter-spacing: 1px;
+            }}
+
+            .date-area {{
+                grid-column: 2;
+                justify-self: end;
+            }}
+
+            #date {{
+                font-size: 11px;
+            }}
+
+            .date-label {{
+                font-size: 9px;
+            }}
+
+            .hover-menu {{
+                left: 0;
+                transform: none;
+            }}
+        }}
+    </style>
+    </head>
+
+    <body>
+        <div class="topbar">
+
+            <div class="clock-area" tabindex="0">
+                <div class="clock-label">
+                    GLOBAL DISASTER WATCH
+                </div>
+
+                <div>
+                    <span id="clock">00:00:00</span>
+                    <span class="utc">UTC 기준</span>
+                </div>
+
+                <div class="hover-menu">
+                    {menu_items}
+                </div>
+            </div>
+
+            <div class="date-area">
+                <div class="date-label">UTC DATE</div>
+                <div id="date">0000-00-00</div>
+            </div>
+
+        </div>
+
+        <script>
+            function updateUTC() {{
+                const now = new Date();
+
+                const hh = String(
+                    now.getUTCHours()
+                ).padStart(2, '0');
+
+                const mm = String(
+                    now.getUTCMinutes()
+                ).padStart(2, '0');
+
+                const ss = String(
+                    now.getUTCSeconds()
+                ).padStart(2, '0');
+
+                const yyyy = now.getUTCFullYear();
+
+                const mo = String(
+                    now.getUTCMonth() + 1
+                ).padStart(2, '0');
+
+                const dd = String(
+                    now.getUTCDate()
+                ).padStart(2, '0');
+
+                document.getElementById('clock').textContent =
+                    hh + ':' + mm + ':' + ss;
+
+                document.getElementById('date').textContent =
+                    yyyy + '-' + mo + '-' + dd;
+            }}
+
+            updateUTC();
+
+            // 시계만 1초마다 갱신합니다.
+            setInterval(updateUTC, 1000);
+        </script>
     </body>
     </html>
     """
 
-    components.html(header_html, height=105, scrolling=False)
+    components.html(
+        header_html,
+        height=145,
+        scrolling=False,
+    )
 
 
 # ------------------------------------------------------------
-# 4. 공통 데이터 요청 함수
+# 4. 데이터 요청 공통 함수
 # ------------------------------------------------------------
 
 def fetch_json(url, params=None):
-    """JSON 자료를 가져옵니다. 실패하면 None을 반환합니다."""
+    """JSON 데이터를 요청하고 실패하면 None을 반환합니다."""
+
     try:
         response = requests.get(
             url,
@@ -492,13 +580,15 @@ def fetch_json(url, params=None):
         )
         response.raise_for_status()
         return response.json()
+
     except (requests.RequestException, ValueError) as exc:
-        LOGGER.warning("JSON 자료 수집 실패: %s", exc)
+        LOGGER.warning("JSON 요청 실패: %s", exc)
         return None
 
 
 def fetch_xml(url, params=None):
-    """RSS/XML 자료를 가져옵니다. 실패하면 None을 반환합니다."""
+    """RSS/XML 데이터를 요청하고 실패하면 None을 반환합니다."""
+
     try:
         response = requests.get(
             url,
@@ -508,33 +598,43 @@ def fetch_xml(url, params=None):
         )
         response.raise_for_status()
         return ET.fromstring(response.content)
-    except (requests.RequestException, ET.ParseError, ValueError) as exc:
-        LOGGER.warning("XML 자료 수집 실패: %s", exc)
+
+    except (
+        requests.RequestException,
+        ET.ParseError,
+        ValueError,
+    ) as exc:
+        LOGGER.warning("XML 요청 실패: %s", exc)
         return None
 
 
 def clean_text(value):
     """HTML 태그와 불필요한 공백을 정리합니다."""
+
     if not value:
         return ""
 
     value = re.sub(r"<[^>]+>", " ", str(value))
     value = html.unescape(value)
+
     return re.sub(r"\s+", " ", value).strip()
 
 
 def parse_utc(value):
-    """UTC 시각을 화면 표시용 문자열로 변환합니다."""
+    """UTC 시각을 사람이 읽기 쉬운 문자열로 변환합니다."""
+
     if value is None:
         return "시각 정보 없음"
 
     try:
         if isinstance(value, (int, float)):
-            dt = datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+            dt = datetime.fromtimestamp(
+                value / 1000,
+                tz=timezone.utc,
+            )
         else:
-            text_value = str(value).strip()
             dt = datetime.fromisoformat(
-                text_value.replace("Z", "+00:00")
+                str(value).strip().replace("Z", "+00:00")
             )
 
             if dt.tzinfo is None:
@@ -543,50 +643,48 @@ def parse_utc(value):
             dt = dt.astimezone(timezone.utc)
 
         return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-    except (ValueError, TypeError, OverflowError, OSError):
+
+    except (
+        ValueError,
+        TypeError,
+        OverflowError,
+        OSError,
+    ):
         return "시각 정보 없음"
 
 
 # ------------------------------------------------------------
-# 5. USGS 실시간 지진 자료
+# 5. USGS 지진 데이터
 # ------------------------------------------------------------
 
 @st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
 def load_earthquakes():
-    """
-    USGS 최근 24시간 지진 GeoJSON을 가져옵니다.
-
-    규모, 장소, 깊이, 발생 시각, 진동을 느꼈다고 보고한
-    횟수 등을 제공처의 데이터 그대로 사용합니다.
-    """
+    """USGS에서 최근 24시간 지진 정보를 가져옵니다."""
 
     data = fetch_json(USGS_URL)
 
     if not isinstance(data, dict):
         return []
 
-    features = data.get("features", [])
     events = []
 
-    for feature in features:
-        properties = feature.get("properties") or {}
-        geometry = feature.get("geometry") or {}
-        coordinates = geometry.get("coordinates") or []
-
+    for feature in data.get("features", []):
         try:
-            magnitude = properties.get("mag")
-            longitude = coordinates[0] if len(coordinates) > 0 else None
-            latitude = coordinates[1] if len(coordinates) > 1 else None
-            depth = coordinates[2] if len(coordinates) > 2 else None
+            properties = feature.get("properties") or {}
+            geometry = feature.get("geometry") or {}
+            coordinates = geometry.get("coordinates") or []
 
+            magnitude = properties.get("mag")
             place = properties.get("place") or "위치 정보 없음"
             event_time = properties.get("time")
+            depth = coordinates[2] if len(coordinates) > 2 else None
             felt = properties.get("felt")
 
-            if magnitude is not None:
-                magnitude_text = f"규모 {float(magnitude):.1f}"
-            else:
-                magnitude_text = "규모 미집계"
+            magnitude_text = (
+                f"규모 {float(magnitude):.1f}"
+                if magnitude is not None
+                else "규모 미집계"
+            )
 
             details = [
                 magnitude_text,
@@ -612,8 +710,6 @@ def load_earthquakes():
                        "https://earthquake.usgs.gov/earthquakes/map/",
                 "magnitude": magnitude,
                 "felt": felt,
-                "latitude": latitude,
-                "longitude": longitude,
                 "depth": depth,
                 "impact": {
                     "사망자": None,
@@ -624,8 +720,7 @@ def load_earthquakes():
             })
 
         except (TypeError, ValueError, IndexError) as exc:
-            LOGGER.warning("지진 항목 변환 실패: %s", exc)
-            continue
+            LOGGER.warning("지진 항목 처리 실패: %s", exc)
 
     events.sort(
         key=lambda event: event.get("time_raw") or 0,
@@ -640,18 +735,18 @@ def load_earthquakes():
 # ------------------------------------------------------------
 
 def classify_gdacs(title, description, category=""):
-    """GDACS 항목의 제목과 설명을 보고 재난 유형을 분류합니다."""
+    """재난 제목과 설명의 키워드로 유형을 분류합니다."""
 
     text_value = (
         f"{title} {description} {category}"
     ).lower()
 
-    # 영문 키워드를 이용한 간단한 분류입니다.
-    # 분류되지 않는 사건은 전체 목록에서 확인할 수 있습니다.
     rules = [
-        ("태풍", ["cyclone", "typhoon", "hurricane", "tropical storm"]),
+        ("태풍", [
+            "cyclone", "typhoon", "hurricane", "tropical storm"
+        ]),
         ("지진", ["earthquake", "seismic"]),
-        ("산불", ["forest fire", "wildfire", "fire"]),
+        ("산불", ["forest fire", "wildfire"]),
         ("홍수", ["flood", "flooding"]),
         ("산사태", ["landslide", "mudslide"]),
         ("폭설", ["snowstorm", "blizzard", "heavy snow"]),
@@ -670,12 +765,7 @@ def classify_gdacs(title, description, category=""):
 
 @st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
 def load_gdacs_events():
-    """
-    GDACS RSS 피드를 읽어 국제 재난 경보를 가져옵니다.
-
-    RSS 항목에 들어 있는 정보만 표시하며,
-    피해 규모를 임의로 계산하거나 만들어 내지 않습니다.
-    """
+    """GDACS RSS에서 국제 재난 경보를 가져옵니다."""
 
     root = fetch_xml(GDACS_URL)
 
@@ -686,7 +776,9 @@ def load_gdacs_events():
 
     for item in root.findall(".//item"):
         try:
-            title = clean_text(item.findtext("title", "제목 없음"))
+            title = clean_text(
+                item.findtext("title", "제목 없음")
+            )
             description = clean_text(
                 item.findtext("description", "")
             )
@@ -694,15 +786,18 @@ def load_gdacs_events():
             pub_date = clean_text(item.findtext("pubDate", ""))
 
             category = ""
+
             for child in item:
                 if child.tag.lower().endswith("category"):
                     category = clean_text(child.text or "")
                     break
 
-            kind = classify_gdacs(title, description, category)
+            kind = classify_gdacs(
+                title,
+                description,
+                category,
+            )
 
-            # GDACS RSS에 기록된 경보 등급을 찾아봅니다.
-            # 등급 정보가 없으면 표시하지 않습니다.
             alert_level = "경보 등급 정보 없음"
             combined = f"{title} {description}"
 
@@ -732,94 +827,19 @@ def load_gdacs_events():
             })
 
         except (AttributeError, TypeError, ValueError) as exc:
-            LOGGER.warning("GDACS 항목 변환 실패: %s", exc)
-            continue
+            LOGGER.warning("GDACS 항목 처리 실패: %s", exc)
 
     return events
 
 
 # ------------------------------------------------------------
-# 7. Google 뉴스 RSS
-# ------------------------------------------------------------
-
-@st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
-def load_news(hazard):
-    """
-    선택한 재난 유형에 맞는 최신 뉴스 RSS를 가져옵니다.
-
-    뉴스는 사건을 파악하는 참고 자료입니다.
-    기사에 나온 수치가 공식 확정 통계라는 의미는 아닙니다.
-    """
-
-    search_term = HAZARDS.get(hazard, HAZARDS["전체"])
-
-    params = {
-        "q": search_term,
-        "hl": "en-US",
-        "gl": "US",
-        "ceid": "US:en",
-    }
-
-    root = fetch_xml(GOOGLE_NEWS_URL, params=params)
-
-    if root is None:
-        return []
-
-    events = []
-
-    for item in root.findall(".//item"):
-        try:
-            title = clean_text(item.findtext("title", "제목 없음"))
-            link = clean_text(item.findtext("link", ""))
-            pub_date = clean_text(item.findtext("pubDate", ""))
-            description = clean_text(
-                item.findtext("description", "")
-            )
-
-            # RSS에서 제공하는 출처 정보가 있으면 추출합니다.
-            source_name = "Google 뉴스 RSS"
-            source_node = item.find("source")
-
-            if source_node is not None and source_node.text:
-                source_name = clean_text(source_node.text)
-
-            # Google 뉴스 검색 결과는 선택한 검색 유형을 기준으로 표시합니다.
-            # 검색 결과가 실제 공식 재난 경보임을 뜻하지는 않습니다.
-            events.append({
-                "kind": hazard,
-                "title": title,
-                "time_raw": pub_date,
-                "time": pub_date or "발행 시각 정보 없음",
-                "location": "기사에서 확인",
-                "description": description or
-                               "기사 요약이 제공되지 않았습니다.",
-                "source": source_name,
-                "url": link,
-                "impact": extract_impact_numbers(
-                    f"{title}. {description}"
-                ),
-                "is_news": True,
-            })
-
-        except (AttributeError, TypeError, ValueError) as exc:
-            LOGGER.warning("뉴스 항목 변환 실패: %s", exc)
-            continue
-
-    return events
-
-
-# ------------------------------------------------------------
-# 8. 기사 요약에서 피해 수치 찾기
+# 7. 기사 요약에서 피해 숫자 탐지
 # ------------------------------------------------------------
 
 def extract_impact_numbers(text_value):
     """
-    뉴스 제목과 RSS 요약에 명시된 피해 숫자를 보조적으로 찾습니다.
-
-    주의:
-    - 짧은 뉴스 요약만 분석하므로 놓치는 숫자가 있을 수 있습니다.
-    - 숫자가 발견되어도 문맥상 확정된 피해인지 자동으로 보장할 수 없습니다.
-    - 따라서 결과는 '기사 요약에서 탐지한 수치'로만 표시합니다.
+    뉴스 제목과 요약에 명시된 피해 숫자를 찾습니다.
+    자동 추출한 수치는 공식 확정 통계가 아닐 수 있습니다.
     """
 
     text_value = clean_text(text_value)
@@ -851,13 +871,15 @@ def extract_impact_numbers(text_value):
 
         if match:
             try:
-                result[label] = int(match.group(1).replace(",", ""))
+                result[label] = int(
+                    match.group(1).replace(",", "")
+                )
             except (ValueError, TypeError):
                 result[label] = None
 
-    # 피해액은 통화 단위와 기준이 다양하므로 자동 환산하지 않습니다.
     money_match = re.search(
-        r"(?:\$|USD\s*)([\d,.]+\s*(?:billion|million|trillion|bn|mn)?)",
+        r"(?:\$|USD\s*)"
+        r"([\d,.]+\s*(?:billion|million|trillion|bn|mn)?)",
         text_value,
         flags=re.I,
     )
@@ -869,16 +891,88 @@ def extract_impact_numbers(text_value):
 
 
 # ------------------------------------------------------------
-# 9. 화면 표시용 HTML 안전 처리
+# 8. Google 뉴스 RSS
+# ------------------------------------------------------------
+
+@st.cache_data(ttl=CACHE_SECONDS, show_spinner=False)
+def load_news(hazard):
+    """선택한 재난 유형의 뉴스 검색 결과를 가져옵니다."""
+
+    search_term = HAZARDS.get(
+        hazard,
+        HAZARDS["전체"],
+    )
+
+    params = {
+        "q": search_term,
+        "hl": "en-US",
+        "gl": "US",
+        "ceid": "US:en",
+    }
+
+    root = fetch_xml(
+        GOOGLE_NEWS_URL,
+        params=params,
+    )
+
+    if root is None:
+        return []
+
+    events = []
+
+    for item in root.findall(".//item"):
+        try:
+            title = clean_text(
+                item.findtext("title", "제목 없음")
+            )
+            link = clean_text(item.findtext("link", ""))
+            pub_date = clean_text(
+                item.findtext("pubDate", "")
+            )
+            description = clean_text(
+                item.findtext("description", "")
+            )
+
+            source_name = "Google 뉴스 RSS"
+            source_node = item.find("source")
+
+            if source_node is not None and source_node.text:
+                source_name = clean_text(source_node.text)
+
+            events.append({
+                "kind": hazard,
+                "title": title,
+                "time_raw": pub_date,
+                "time": pub_date or "발행 시각 정보 없음",
+                "location": "기사에서 확인",
+                "description": description or
+                               "기사 요약이 제공되지 않았습니다.",
+                "source": source_name,
+                "url": link,
+                "impact": extract_impact_numbers(
+                    f"{title}. {description}"
+                ),
+                "is_news": True,
+            })
+
+        except (AttributeError, TypeError, ValueError) as exc:
+            LOGGER.warning("뉴스 항목 처리 실패: %s", exc)
+
+    return events
+
+
+# ------------------------------------------------------------
+# 9. 재난 카드 출력
 # ------------------------------------------------------------
 
 def safe(value):
-    """HTML에 표시할 문자열을 안전하게 변환합니다."""
+    """화면에 표시할 문자열을 HTML 안전 처리합니다."""
     return html.escape(str(value or ""))
 
 
 def format_number(value):
-    """숫자가 있으면 천 단위 쉼표를 표시합니다."""
+    """숫자를 천 단위 쉼표 형식으로 바꿉니다."""
+
     if value is None:
         return "미집계"
 
@@ -889,7 +983,7 @@ def format_number(value):
 
 
 def render_event_card(event):
-    """재난 또는 기사 한 건을 카드 형태로 보여줍니다."""
+    """재난 또는 기사 한 건을 카드로 표시합니다."""
 
     title = safe(event.get("title", "제목 없음"))
     source = safe(event.get("source", "출처 정보 없음"))
@@ -902,49 +996,42 @@ def render_event_card(event):
     ):
         link = ""
 
-    # 피해 숫자는 데이터 제공처 또는 기사 요약에서
-    # 실제로 찾은 경우에만 표시합니다.
     impact = event.get("impact") or {}
-
     impact_parts = []
 
     for label in ("사망자", "부상자", "이재민", "피해액"):
         value = impact.get(label)
 
-        if value is not None:
-            if isinstance(value, (int, float)):
-                display_value = format_number(value)
-            else:
-                display_value = str(value)
-
-            impact_parts.append(
-                f"{safe(label)}: {safe(display_value)}"
-            )
+        if value is None:
+            display_value = "미집계"
+        elif isinstance(value, (int, float)):
+            display_value = format_number(value)
         else:
-            impact_parts.append(f"{safe(label)}: 미집계")
+            display_value = str(value)
+
+        impact_parts.append(
+            f"{safe(label)}: {safe(display_value)}"
+        )
 
     impact_html = " &nbsp;·&nbsp; ".join(impact_parts)
 
-    alert = event.get("alert_level")
-
     alert_html = ""
 
-    if alert:
+    if event.get("alert_level"):
         alert_html = (
             '<div class="event-meta">경보: '
-            + safe(alert)
+            + safe(event["alert_level"])
             + "</div>"
         )
 
     if event.get("is_news"):
         impact_note = (
-            "기사 제목·요약에서 탐지한 참고 수치이며, "
-            "공식 피해 통계로 검증된 값이 아닐 수 있습니다."
+            "기사 제목·요약에서 탐지한 참고 수치입니다. "
+            "공식 통계로 검증된 값이 아닐 수 있습니다."
         )
     else:
         impact_note = (
-            "공식 피해 숫자가 해당 데이터에 없으면 "
-            "미집계로 표시합니다."
+            "공식 피해 숫자가 자료에 없으면 미집계로 표시합니다."
         )
 
     link_html = ""
@@ -980,16 +1067,23 @@ def render_event_card(event):
 
 
 # ------------------------------------------------------------
-# 10. 선택한 재난 유형 읽기
+# 10. 재난 유형 선택값 확인
 # ------------------------------------------------------------
 
 try:
-    query_hazard = st.query_params.get("hazard", "전체")
+    query_hazard = st.query_params.get(
+        "hazard",
+        "전체",
+    )
 except Exception:
     query_hazard = "전체"
 
 if isinstance(query_hazard, list):
-    query_hazard = query_hazard[0] if query_hazard else "전체"
+    query_hazard = (
+        query_hazard[0]
+        if query_hazard
+        else "전체"
+    )
 
 if query_hazard not in HAZARDS:
     query_hazard = "전체"
@@ -998,7 +1092,7 @@ selected_hazard = query_hazard
 
 
 # ------------------------------------------------------------
-# 11. 상단 헤더
+# 11. 상단 시계와 제목
 # ------------------------------------------------------------
 
 render_utc_header(selected_hazard)
@@ -1010,7 +1104,7 @@ st.markdown(
         <div class="main-title">WORLD DISASTER LIVE</div>
         <div class="sub-title">
             전 세계 자연재해 경보와 최신 보도를 한곳에서 확인합니다.<br>
-            실시간 시계는 UTC 기준이며, 각 데이터의 실제 갱신 주기는
+            실시간 시계는 UTC 기준이며, 데이터 갱신 주기는
             제공처마다 다릅니다.
         </div>
     </div>
@@ -1020,7 +1114,7 @@ st.markdown(
 
 
 # ------------------------------------------------------------
-# 12. 데이터 불러오기
+# 12. 데이터 수집
 # ------------------------------------------------------------
 
 with st.spinner("세계 재난 정보를 수집하고 있습니다..."):
@@ -1028,7 +1122,6 @@ with st.spinner("세계 재난 정보를 수집하고 있습니다..."):
     gdacs_events = load_gdacs_events()
     news_events = load_news(selected_hazard)
 
-# 선택한 유형에 맞춰 자료를 구분합니다.
 if selected_hazard == "전체":
     primary_events = gdacs_events + earthquake_events
 else:
@@ -1040,7 +1133,7 @@ else:
     if selected_hazard == "지진":
         primary_events += earthquake_events
 
-# 동일 링크가 여러 번 등장하지 않도록 중복을 제거합니다.
+# 링크 또는 제목을 기준으로 중복 항목을 제거합니다.
 unique_events = []
 seen = set()
 
@@ -1055,16 +1148,17 @@ primary_events = unique_events
 
 
 # ------------------------------------------------------------
-# 13. 요약 지표
+# 13. 요약 카드
 # ------------------------------------------------------------
 
 total_alerts = len(primary_events)
 total_articles = len(news_events)
 
-if selected_hazard == "전체":
-    data_label = "전체 재난 경보"
-else:
-    data_label = f"{selected_hazard} 관련 경보"
+data_label = (
+    "전체 재난 경보"
+    if selected_hazard == "전체"
+    else f"{selected_hazard} 관련 경보"
+)
 
 metric_cols = st.columns(4)
 
@@ -1106,7 +1200,7 @@ for col, (label, value, note) in zip(metric_cols, metrics):
 
 
 # ------------------------------------------------------------
-# 14. 자료 갱신 버튼과 상태 표시
+# 14. 갱신 버튼
 # ------------------------------------------------------------
 
 st.write("")
@@ -1118,7 +1212,7 @@ with left:
         """
         <div class="status-line">
             ● 데이터 제공처에 연결하여 자료를 조회합니다.
-            연결 상태와 검색 결과는 요청할 때마다 달라질 수 있습니다.
+            제공처의 연결 상태에 따라 결과가 달라질 수 있습니다.
         </div>
         """,
         unsafe_allow_html=True,
@@ -1140,7 +1234,9 @@ with right:
 # ------------------------------------------------------------
 
 st.markdown(
-    '<div class="section-title">📡 재난 경보 및 발생 현황</div>',
+    '<div class="section-title">'
+    '📡 재난 경보 및 발생 현황'
+    '</div>',
     unsafe_allow_html=True,
 )
 
@@ -1150,13 +1246,13 @@ if primary_events:
 else:
     st.info(
         "현재 선택한 유형에서 표시할 공식 경보를 찾지 못했습니다. "
-        "경보가 없다는 뜻은 아니며, 데이터 제공처의 범위나 연결 상태에 "
+        "경보가 없다는 뜻은 아니며, 제공처의 데이터 범위나 연결 상태에 "
         "따라 결과가 비어 있을 수 있습니다."
     )
 
 
 # ------------------------------------------------------------
-# 16. 최신 뉴스 기사
+# 16. 관련 기사
 # ------------------------------------------------------------
 
 st.markdown(
@@ -1166,8 +1262,8 @@ st.markdown(
 
 if news_events:
     st.caption(
-        "뉴스 검색 결과는 보도 내용을 빠르게 확인하기 위한 참고 자료입니다. "
-        "기사의 발행 시각과 재난 발생 시각은 다를 수 있습니다."
+        "뉴스는 사건을 파악하기 위한 참고 자료입니다. "
+        "기사 발행 시각과 실제 재난 발생 시각은 다를 수 있습니다."
     )
 
     for event in news_events[:20]:
@@ -1175,17 +1271,18 @@ if news_events:
 else:
     st.warning(
         "뉴스 RSS를 불러오지 못했거나 검색 결과가 없습니다. "
-        "잠시 후 다시 시도하거나 재난 경보 목록을 확인해 주세요."
+        "잠시 후 다시 시도해 주세요."
     )
 
 
 # ------------------------------------------------------------
-# 17. 데이터 제공처 안내
+# 17. 데이터 출처 및 주의 사항
 # ------------------------------------------------------------
 
 st.markdown(
     """
     <div class="section-title">🔎 데이터 출처 및 해석 안내</div>
+
     <div class="event-card">
         <div class="event-title">USGS · 미국 지질조사국</div>
         <div class="event-desc">
@@ -1193,49 +1290,49 @@ st.markdown(
         </div>
         <a href="https://earthquake.usgs.gov/earthquakes/feed/"
            target="_blank" rel="noopener noreferrer">
-           USGS 실시간 지진 데이터 ↗
+            USGS 실시간 지진 데이터 ↗
         </a>
     </div>
+
     <div class="event-card">
         <div class="event-title">GDACS · 국제 재난 경보</div>
         <div class="event-desc">
-            주요 국제 재난 이벤트와 경보 정보를 제공하는 시스템입니다.
-            모든 지역의 모든 재난을 빠짐없이 기록하는 시스템은 아닙니다.
+            주요 국제 재난 이벤트와 경보 정보를 제공합니다.
+            모든 지역의 모든 재난을 빠짐없이 기록하지는 않습니다.
         </div>
         <a href="https://www.gdacs.org/"
            target="_blank" rel="noopener noreferrer">
-           GDACS 공식 사이트 ↗
+            GDACS 공식 사이트 ↗
         </a>
     </div>
+
     <div class="event-card">
         <div class="event-title">Google 뉴스 RSS</div>
         <div class="event-desc">
             선택한 재난 유형의 최신 보도 검색 결과입니다.
-            검색 결과에는 중복 기사, 후속 보도, 과거 사건 관련 기사가
-            포함될 수 있습니다.
+            중복 기사나 과거 사건의 후속 보도가 포함될 수 있습니다.
         </div>
         <a href="https://news.google.com/"
            target="_blank" rel="noopener noreferrer">
-           Google 뉴스 ↗
+            Google 뉴스 ↗
         </a>
     </div>
 
     <div class="notice">
         <b>피해 수치 이용 시 주의</b><br>
-        사망자, 부상자, 이재민, 재산 피해액은 집계 기관과 발표 시점에 따라
-        달라집니다. 이 앱은 출처에서 제공하지 않는 숫자를 임의로 생성하지
-        않습니다. 뉴스 요약에서 자동으로 찾은 수치는 문맥 검증이 완료된
-        공식 통계가 아니므로 원문 기사와 공식 기관 발표를 확인하세요.<br><br>
-        이 앱은 정보 확인용이며, 대피 여부나 긴급 행동은 해당 지역의
-        공식 재난 당국 안내를 우선으로 따르세요.
+        사망자, 부상자, 이재민 및 재산 피해액은 집계 기관과
+        발표 시점에 따라 달라질 수 있습니다. 자료에서 제공하지 않는
+        숫자는 임의로 생성하지 않습니다. 뉴스 요약에서 자동 탐지한
+        수치는 공식 확정 통계가 아닐 수 있으므로 원문과 공식 발표를
+        확인하세요.<br><br>
+        긴급 상황에서는 해당 지역의 공식 재난 당국 안내를 우선하세요.
     </div>
 
     <div class="footer">
         WORLD DISASTER LIVE · Global natural disaster monitor<br>
         시간 기준: UTC · 시계: 브라우저에서 1초마다 갱신<br>
-        재난 자료 캐시: 300초 · 뉴스 발행 시각과 재난 발생 시각은 다를 수 있음
+        재난 자료 캐시: 300초 · 뉴스 발행 시각과 발생 시각은 다를 수 있음
     </div>
     """,
     unsafe_allow_html=True,
 )
-

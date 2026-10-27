@@ -4,7 +4,7 @@ import html
 import logging
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from urllib.parse import quote
+from email.utils import parsedate_to_datetime
 
 import pandas as pd
 import requests
@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 
 
 # =========================================================
-# 기본 설정
+# PAGE CONFIGURATION
 # =========================================================
 st.set_page_config(
     page_title="WORLD DISASTER LIVE",
@@ -47,6 +47,8 @@ HAZARDS = [
     ("Landslide", "LANDSLIDE"),
 ]
 
+HAZARD_LABELS = dict(HAZARDS)
+
 HAZARD_KEYWORDS = {
     "TYPHOON": [
         "typhoon", "hurricane", "cyclone", "tropical storm",
@@ -64,8 +66,8 @@ HAZARD_KEYWORDS = {
         "홍수", "침수",
     ],
     "HEAVY_RAIN": [
-        "heavy rain", "torrential rain", "rainfall",
-        "downpour", "monsoon rain", "폭우", "집중호우",
+        "heavy rain", "torrential rain", "downpour",
+        "monsoon rain", "폭우", "집중호우",
     ],
     "DROUGHT": [
         "drought", "water shortage", "가뭄",
@@ -88,43 +90,53 @@ HAZARD_KEYWORDS = {
     ],
 }
 
-HAZARD_LABELS = dict(HAZARDS)
-
 HAZARD_COLORS = {
-    "TYPHOON": "#7c3aed",
-    "EARTHQUAKE": "#dc2626",
-    "WILDFIRE": "#ea580c",
-    "FLOOD": "#2563eb",
-    "HEAVY_RAIN": "#0891b2",
-    "DROUGHT": "#ca8a04",
-    "HEAVY_SNOW": "#64748b",
-    "HEATWAVE": "#e11d48",
-    "COLD_WAVE": "#0284c7",
-    "LANDSLIDE": "#92400e",
-    "ALL": "#64748b",
+    "ALL": "#94a3b8",
+    "TYPHOON": "#a78bfa",
+    "EARTHQUAKE": "#f87171",
+    "WILDFIRE": "#fb923c",
+    "FLOOD": "#60a5fa",
+    "HEAVY_RAIN": "#22d3ee",
+    "DROUGHT": "#facc15",
+    "HEAVY_SNOW": "#cbd5e1",
+    "HEATWAVE": "#fb7185",
+    "COLD_WAVE": "#38bdf8",
+    "LANDSLIDE": "#c08457",
 }
 
 
 # =========================================================
-# 스타일
+# GLOBAL CSS
 # =========================================================
 st.markdown(
     """
     <style>
     .block-container {
-        padding-top: 0.8rem;
+        max-width: 1600px;
+        padding-top: 0.5rem;
         padding-bottom: 2rem;
-        max-width: 1500px;
     }
 
-    h1, h2, h3 {
-        letter-spacing: -0.4px;
+    .main-title {
+        text-align: center;
+        font-size: clamp(26px, 4vw, 42px);
+        font-weight: 900;
+        letter-spacing: 1px;
+        margin-top: 0.2rem;
+        margin-bottom: 0.1rem;
+    }
+
+    .main-subtitle {
+        text-align: center;
+        font-size: 14px;
+        color: #9ca3af;
+        margin-bottom: 1.2rem;
     }
 
     .section-title {
-        font-size: 1.25rem;
+        font-size: 1.2rem;
         font-weight: 800;
-        margin: 1rem 0 0.7rem 0;
+        margin: 1rem 0 0.7rem;
     }
 
     .event-card {
@@ -134,6 +146,7 @@ st.markdown(
         min-height: 180px;
         background: #151b26;
         margin-bottom: 8px;
+        overflow-wrap: anywhere;
     }
 
     .event-type {
@@ -144,36 +157,31 @@ st.markdown(
     }
 
     .event-title {
-        font-size: 1.03rem;
+        font-size: 1rem;
         font-weight: 750;
-        line-height: 1.4;
+        line-height: 1.5;
         margin-bottom: 10px;
-        overflow-wrap: anywhere;
+        color: #f9fafb;
     }
 
     .event-meta {
         color: #aab4c4;
-        font-size: 0.83rem;
-        line-height: 1.7;
-    }
-
-    .metric-panel {
-        border: 1px solid #303744;
-        border-radius: 12px;
-        padding: 14px 16px;
-        background: #151b26;
-    }
-
-    .small-muted {
-        color: #9ca3af;
         font-size: 0.82rem;
+        line-height: 1.8;
     }
 
     div[data-testid="stButton"] > button {
-        border-radius: 8px;
-        font-weight: 650;
-        min-height: 42px;
         width: 100%;
+        min-height: 44px;
+        border-radius: 8px;
+        font-weight: 700;
+    }
+
+    div[data-testid="stMetric"] {
+        background: rgba(148, 163, 184, 0.06);
+        border: 1px solid #303744;
+        border-radius: 12px;
+        padding: 12px 15px;
     }
 
     div[data-testid="stLinkButton"] > a {
@@ -190,9 +198,7 @@ st.markdown(
 
 
 # =========================================================
-# UTC 시계
-# 시계는 HTML로 표시하지만 재난 메뉴는 아래의
-# Streamlit 버튼으로 만들어 실제 클릭 동작을 보장한다.
+# LARGE UTC CLOCK
 # =========================================================
 def render_utc_header():
     components.html(
@@ -202,75 +208,118 @@ def render_utc_header():
         <head>
         <meta charset="utf-8">
         <style>
-            * { box-sizing: border-box; }
+            * {
+                box-sizing: border-box;
+            }
+
             html, body {
                 margin: 0;
                 padding: 0;
                 width: 100%;
                 background: transparent;
-                color: #f9fafb;
+                color: #ffffff;
                 font-family: Arial, Helvetica, sans-serif;
             }
+
             .header {
-                display: grid;
-                grid-template-columns: 1fr auto 1fr;
-                align-items: center;
+                position: relative;
                 width: 100%;
-                padding: 16px 8px 12px;
-                min-height: 118px;
+                min-height: 205px;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                padding: 20px 190px 24px;
+                border-bottom: 1px solid #303744;
             }
+
             .clock-area {
-                grid-column: 2;
+                width: 100%;
                 text-align: center;
             }
+
             #clock {
-                font-size: clamp(42px, 7vw, 76px);
-                font-weight: 800;
-                line-height: 1.08;
-                letter-spacing: 2px;
+                font-size: clamp(76px, 11vw, 132px);
+                font-weight: 900;
+                line-height: 1.05;
+                letter-spacing: 4px;
+                color: #ffffff;
+                text-shadow: 0 0 22px rgba(255,255,255,0.12);
+                font-variant-numeric: tabular-nums;
                 white-space: nowrap;
             }
+
             .utc {
-                font-size: 12px;
-                color: #9ca3af;
-                letter-spacing: 3px;
-                margin-top: 7px;
-            }
-            #date {
-                grid-column: 3;
-                justify-self: end;
-                text-align: right;
-                color: #cbd5e1;
+                display: inline-block;
+                margin-top: 10px;
+                padding: 5px 16px;
+                border: 1px solid #64748b;
+                border-radius: 6px;
+                color: #e2e8f0;
                 font-size: 15px;
+                font-weight: 800;
+                letter-spacing: 5px;
+            }
+
+            #date {
+                position: absolute;
+                top: 24px;
+                right: 20px;
+                text-align: right;
+                color: #f1f5f9;
+                font-size: 16px;
+                font-weight: 700;
+                line-height: 1.6;
                 white-space: nowrap;
             }
-            @media (max-width: 600px) {
+
+            .date-label {
+                display: block;
+                font-size: 11px;
+                color: #94a3b8;
+                letter-spacing: 2px;
+                margin-bottom: 3px;
+            }
+
+            @media (max-width: 700px) {
                 .header {
-                    grid-template-columns: 1fr;
-                    gap: 8px;
-                    padding-top: 10px;
+                    min-height: 170px;
+                    padding: 52px 5px 15px;
                 }
-                .clock-area {
-                    grid-column: 1;
-                }
-                #date {
-                    grid-column: 1;
-                    justify-self: center;
-                    text-align: center;
-                }
+
                 #clock {
-                    font-size: 48px;
+                    font-size: clamp(48px, 12vw, 76px);
+                    letter-spacing: 1px;
+                }
+
+                #date {
+                    top: 6px;
+                    right: 8px;
+                    font-size: 12px;
+                }
+
+                .date-label {
+                    font-size: 9px;
+                }
+
+                .utc {
+                    font-size: 12px;
+                    margin-top: 8px;
                 }
             }
         </style>
         </head>
+
         <body>
             <div class="header">
                 <div class="clock-area">
                     <div id="clock">00:00:00</div>
                     <div class="utc">UTC</div>
                 </div>
-                <div id="date">0000-00-00 UTC</div>
+
+                <div id="date">
+                    <span class="date-label">CURRENT DATE</span>
+                    <span id="date-value">0000-00-00</span>
+                </div>
             </div>
 
             <script>
@@ -283,10 +332,10 @@ def render_utc_header():
                         pad(now.getUTCMinutes()) + ":" +
                         pad(now.getUTCSeconds());
 
-                    document.getElementById("date").textContent =
+                    document.getElementById("date-value").textContent =
                         now.getUTCFullYear() + "-" +
                         pad(now.getUTCMonth() + 1) + "-" +
-                        pad(now.getUTCDate()) + " UTC";
+                        pad(now.getUTCDate());
                 }
 
                 updateClock();
@@ -295,21 +344,20 @@ def render_utc_header():
         </body>
         </html>
         """,
-        height=125,
+        height=215,
         scrolling=False,
     )
 
 
 # =========================================================
-# 메뉴 버튼
-# 각 버튼은 session_state를 변경하고 앱을 다시 실행한다.
+# FUNCTIONAL HORIZONTAL HAZARD MENU
 # =========================================================
 def render_hazard_menu():
     st.markdown(
         """
         <div style="
             width:100%;
-            padding:8px 0 3px;
+            padding:8px 0 8px;
             font-size:12px;
             font-weight:800;
             color:#9ca3af;
@@ -319,19 +367,18 @@ def render_hazard_menu():
         unsafe_allow_html=True,
     )
 
-    # 버튼을 6개 + 5개로 배치해 가로폭을 넓게 사용한다.
+    selected = st.session_state.get("hazard", "ALL")
+
+    # 6 buttons on the first row, 5 on the second.
     rows = [HAZARDS[:6], HAZARDS[6:]]
 
-    for row_index, row in enumerate(rows):
+    for row in rows:
         columns = st.columns(len(row), gap="small")
 
-        for col, (label, code) in zip(columns, row):
-            with col:
-                is_active = st.session_state.get("hazard", "ALL") == code
-
-                button_label = label
-                if is_active:
-                    button_label = f"● {label}"
+        for column, (label, code) in zip(columns, row):
+            with column:
+                is_active = selected == code
+                button_label = f"● {label}" if is_active else label
 
                 if st.button(
                     button_label,
@@ -345,7 +392,7 @@ def render_hazard_menu():
 
 
 # =========================================================
-# 공통 유틸리티
+# COMMON UTILITIES
 # =========================================================
 def safe_text(value, default="Unknown"):
     if value is None:
@@ -376,7 +423,7 @@ def format_utc(value):
 
 def fetch_text(url, params=None):
     headers = {
-        "User-Agent": "WorldDisasterLive/1.0 (public information dashboard)"
+        "User-Agent": "WorldDisasterLive/1.0"
     }
 
     try:
@@ -389,18 +436,19 @@ def fetch_text(url, params=None):
         response.raise_for_status()
         return response.text
     except requests.RequestException as exc:
-        logging.error("Request failed for %s: %s", url, exc)
+        logging.error("Request failed: %s", exc)
         return None
 
 
 def fetch_json(url):
-    text = fetch_text(url)
-    if not text:
+    import json
+
+    content = fetch_text(url)
+    if not content:
         return None
 
     try:
-        import json
-        return json.loads(text)
+        return json.loads(content)
     except ValueError:
         return None
 
@@ -429,17 +477,20 @@ def get_coordinates(event):
     try:
         if lat is None or lon is None:
             return None
+
         lat = float(lat)
         lon = float(lon)
+
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
             return None
+
         return lat, lon
     except (TypeError, ValueError):
         return None
 
 
 # =========================================================
-# Earthquake feed: USGS
+# USGS EARTHQUAKES
 # =========================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def load_earthquakes():
@@ -450,15 +501,15 @@ def load_earthquakes():
         return events
 
     for feature in payload.get("features", []):
-        properties = feature.get("properties", {}) or {}
+        props = feature.get("properties", {}) or {}
         geometry = feature.get("geometry", {}) or {}
-        coordinates = geometry.get("coordinates", [])
+        coords = geometry.get("coordinates", [])
 
-        lon = coordinates[0] if len(coordinates) > 0 else None
-        lat = coordinates[1] if len(coordinates) > 1 else None
-        depth = coordinates[2] if len(coordinates) > 2 else None
+        lon = coords[0] if len(coords) > 0 else None
+        lat = coords[1] if len(coords) > 1 else None
+        depth = coords[2] if len(coords) > 2 else None
 
-        timestamp_ms = properties.get("time")
+        timestamp_ms = props.get("time")
         event_time = None
 
         if timestamp_ms is not None:
@@ -467,70 +518,78 @@ def load_earthquakes():
                 tz=timezone.utc,
             ).isoformat()
 
-        magnitude = properties.get("mag")
-        place = safe_text(properties.get("place"), "Location unavailable")
+        magnitude = props.get("mag")
+        location = safe_text(
+            props.get("place"),
+            "Location unavailable",
+        )
 
         events.append({
-            "id": str(feature.get("id", properties.get("url", place))),
-            "title": f"M{magnitude} Earthquake — {place}",
+            "id": str(feature.get("id", props.get("url", location))),
+            "title": f"M{magnitude} Earthquake — {location}",
             "hazard": "EARTHQUAKE",
-            "location": place,
+            "location": location,
             "time": event_time,
             "source": "USGS",
-            "source_url": properties.get("url"),
+            "source_url": props.get("url"),
             "latitude": lat,
             "longitude": lon,
             "magnitude": magnitude,
             "depth_km": depth,
-            "felt": properties.get("felt"),
-            "alert": properties.get("alert"),
-            "description": safe_text(properties.get("title"), place),
+            "felt": props.get("felt"),
+            "alert": props.get("alert"),
+            "description": safe_text(props.get("title"), location),
             "damage": "Not confirmed by this feed",
         })
 
     events.sort(
-        key=lambda item: item.get("time") or "",
+        key=lambda event: event.get("time") or "",
         reverse=True,
     )
     return events
 
 
 # =========================================================
-# GDACS RSS
+# GDACS RSS EVENTS
 # =========================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def load_gdacs_events():
-    xml_text = fetch_text(GDACS_URL)
+    xml_content = fetch_text(GDACS_URL)
     events = []
 
-    if not xml_text:
+    if not xml_content:
         return events
 
     try:
-        root = ET.fromstring(xml_text)
+        root = ET.fromstring(xml_content)
     except ET.ParseError:
         return events
 
     for item in root.findall(".//item"):
         title = clean_html_text(item.findtext("title", ""))
-        description = clean_html_text(item.findtext("description", ""))
+        description = clean_html_text(
+            item.findtext("description", "")
+        )
         link = safe_text(item.findtext("link"), "")
         pub_date = item.findtext("pubDate", "")
 
-        combined = f"{title} {description}"
-        hazard = classify_hazard(combined)
+        hazard = classify_hazard(f"{title} {description}")
 
         if hazard == "ALL":
             continue
 
         event_time = None
+
         if pub_date:
             try:
-                from email.utils import parsedate_to_datetime
                 parsed = parsedate_to_datetime(pub_date)
+
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=timezone.utc)
-                event_time = parsed.astimezone(timezone.utc).isoformat()
+
+                event_time = parsed.astimezone(
+                    timezone.utc
+                ).isoformat()
             except (TypeError, ValueError, OverflowError):
                 event_time = None
 
@@ -553,18 +612,21 @@ def load_gdacs_events():
         })
 
     events.sort(
-        key=lambda item: item.get("time") or "",
+        key=lambda event: event.get("time") or "",
         reverse=True,
     )
     return events
 
 
 # =========================================================
-# News RSS
+# GOOGLE NEWS RSS
 # =========================================================
 def google_news_query(hazard):
     queries = {
-        "ALL": "global natural disaster OR earthquake OR typhoon OR wildfire",
+        "ALL": (
+            "global natural disaster OR earthquake OR typhoon "
+            "OR wildfire OR flood"
+        ),
         "TYPHOON": "typhoon OR hurricane OR tropical cyclone",
         "EARTHQUAKE": "earthquake",
         "WILDFIRE": "wildfire OR forest fire",
@@ -581,51 +643,56 @@ def google_news_query(hazard):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_news(hazard):
-    query = google_news_query(hazard)
-
     params = {
-        "q": query,
+        "q": google_news_query(hazard),
         "hl": "en-US",
         "gl": "US",
         "ceid": "US:en",
     }
 
-    xml_text = fetch_text(GOOGLE_NEWS_URL, params=params)
+    xml_content = fetch_text(GOOGLE_NEWS_URL, params=params)
     articles = []
 
-    if not xml_text:
+    if not xml_content:
         return articles
 
     try:
-        root = ET.fromstring(xml_text)
+        root = ET.fromstring(xml_content)
     except ET.ParseError:
         return articles
 
     for item in root.findall(".//item"):
         title = clean_html_text(item.findtext("title", ""))
-        description = clean_html_text(item.findtext("description", ""))
-        link = safe_text(item.findtext("link"), "")
-        source = item.find("source")
-        source_name = (
-            clean_html_text(source.text)
-            if source is not None and source.text
-            else "Google News"
+        description = clean_html_text(
+            item.findtext("description", "")
         )
-
+        link = safe_text(item.findtext("link"), "")
         pub_date = item.findtext("pubDate", "")
+
+        source_node = item.find("source")
+        if source_node is not None and source_node.text:
+            source_name = clean_html_text(source_node.text)
+        else:
+            source_name = "Google News"
+
         event_time = None
 
         if pub_date:
             try:
-                from email.utils import parsedate_to_datetime
                 parsed = parsedate_to_datetime(pub_date)
+
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=timezone.utc)
-                event_time = parsed.astimezone(timezone.utc).isoformat()
+
+                event_time = parsed.astimezone(
+                    timezone.utc
+                ).isoformat()
             except (TypeError, ValueError, OverflowError):
                 event_time = None
 
-        classified = classify_hazard(f"{title} {description}")
+        classified = classify_hazard(
+            f"{title} {description}"
+        )
 
         articles.append({
             "title": title or "Untitled report",
@@ -636,32 +703,79 @@ def load_news(hazard):
             "hazard": classified,
         })
 
-    # Avoid duplicate links
-    unique = {}
-    for article in articles:
-        unique[article["url"] or article["title"]] = article
+    unique_articles = {}
 
-    articles = list(unique.values())
+    for article in articles:
+        key = article["url"] or article["title"]
+        unique_articles[key] = article
+
+    articles = list(unique_articles.values())
     articles.sort(
-        key=lambda item: item.get("time") or "",
+        key=lambda article: article.get("time") or "",
         reverse=True,
     )
+
     return articles[:40]
 
 
 # =========================================================
-# Display helpers
+# FILTER DATA BY SELECTED CATEGORY
+# =========================================================
+def filter_events(events, selected_hazard):
+    if selected_hazard == "ALL":
+        return events
+
+    return [
+        event for event in events
+        if event.get("hazard") == selected_hazard
+    ]
+
+
+def filter_articles(articles, selected_hazard):
+    if selected_hazard == "ALL":
+        return articles
+
+    keywords = HAZARD_KEYWORDS.get(selected_hazard, [])
+    filtered = []
+
+    for article in articles:
+        combined_text = (
+            str(article.get("title", "")) + " " +
+            str(article.get("description", ""))
+        ).lower()
+
+        if (
+            article.get("hazard") == selected_hazard
+            or any(word.lower() in combined_text for word in keywords)
+        ):
+            filtered.append(article)
+
+    return filtered
+
+
+# =========================================================
+# EVENT CARD
 # =========================================================
 def get_hazard_label(code):
-    return HAZARD_LABELS.get(code, code.replace("_", " ").title())
+    return HAZARD_LABELS.get(
+        code,
+        code.replace("_", " ").title(),
+    )
 
 
 def event_card(event, index):
     hazard = event.get("hazard", "ALL")
-    color = HAZARD_COLORS.get(hazard, "#64748b")
-    title = html.escape(safe_text(event.get("title"), "Untitled event"))
-    location = html.escape(safe_text(event.get("location"), "Unknown"))
-    source = html.escape(safe_text(event.get("source"), "Unknown"))
+    color = HAZARD_COLORS.get(hazard, "#94a3b8")
+
+    title = html.escape(
+        safe_text(event.get("title"), "Untitled event")
+    )
+    location = html.escape(
+        safe_text(event.get("location"), "Unknown")
+    )
+    source = html.escape(
+        safe_text(event.get("source"), "Unknown")
+    )
     time_text = html.escape(format_utc(event.get("time")))
     hazard_label = html.escape(get_hazard_label(hazard))
 
@@ -684,19 +798,23 @@ def event_card(event, index):
 
     if st.button(
         "View Details",
-        key=f"details_{index}_{event.get('id', title)}",
+        key=f"details_{index}",
         use_container_width=True,
     ):
         st.session_state["selected_event"] = event
         st.rerun()
 
 
+# =========================================================
+# NEWS CARD
+# =========================================================
 def article_card(article, index):
     title = safe_text(article.get("title"), "Untitled report")
     source = safe_text(article.get("source"), "News source")
 
     with st.container(border=True):
         st.markdown(f"**{title}**")
+
         st.caption(
             f"{source} · {format_utc(article.get('time'))}"
         )
@@ -713,12 +831,12 @@ def article_card(article, index):
 
 
 # =========================================================
-# Event details dialog
+# CENTERED DETAIL DIALOG
 # =========================================================
 @st.dialog("Disaster Details", width="large")
 def show_disaster_dialog(event):
     hazard = event.get("hazard", "ALL")
-    color = HAZARD_COLORS.get(hazard, "#64748b")
+    color = HAZARD_COLORS.get(hazard, "#94a3b8")
 
     st.markdown(
         f"""
@@ -726,15 +844,18 @@ def show_disaster_dialog(event):
             color:{color};
             font-size:12px;
             font-weight:800;
-            letter-spacing:1.4px;
+            letter-spacing:1.5px;
         ">{html.escape(get_hazard_label(hazard).upper())}</div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.subheader(safe_text(event.get("title"), "Untitled event"))
+    st.subheader(
+        safe_text(event.get("title"), "Untitled event")
+    )
 
     st.markdown("### Basic Information")
+
     col1, col2 = st.columns(2)
 
     with col1:
@@ -747,20 +868,20 @@ def show_disaster_dialog(event):
         st.write("**Data source**")
         st.write(safe_text(event.get("source")))
         st.write("**Alert level**")
-        st.write(safe_text(event.get("alert"), "Unconfirmed"))
+        st.write(safe_text(event.get("alert"), "Unknown"))
 
     if hazard == "EARTHQUAKE":
         st.markdown("### Earthquake Measurements")
 
-        mag = event.get("magnitude")
+        m1, m2, m3 = st.columns(3)
+
+        magnitude = event.get("magnitude")
         depth = event.get("depth_km")
         felt = event.get("felt")
 
-        m1, m2, m3 = st.columns(3)
-
         m1.metric(
             "Magnitude",
-            f"{mag}" if mag is not None else "Unknown",
+            str(magnitude) if magnitude is not None else "Unknown",
         )
         m2.metric(
             "Depth",
@@ -768,24 +889,26 @@ def show_disaster_dialog(event):
         )
         m3.metric(
             "Felt reports",
-            f"{felt}" if felt is not None else "Unknown",
+            str(felt) if felt is not None else "Unknown",
         )
 
     st.markdown("### Damage and Impact")
     st.info(
-        "Confirmed casualty and damage totals are not available "
-        "from the selected feed. Check the original report for "
-        "verified figures."
+        "Verified casualty and damage totals are not available "
+        "from this report. Check the original source for confirmed "
+        "figures."
     )
-    st.write("**Damage status:** Not confirmed by this dashboard.")
-    st.write("**Casualties:** Unknown")
+
+    st.write("**Confirmed casualties:** Unknown")
     st.write("**Economic losses:** Unknown")
+    st.write("**Damage status:** Not confirmed by this dashboard")
 
     if event.get("description"):
         st.markdown("### Report Summary")
         st.write(event["description"])
 
     coordinates = get_coordinates(event)
+
     if coordinates:
         lat, lon = coordinates
 
@@ -796,9 +919,11 @@ def show_disaster_dialog(event):
             "latitude": [lat],
             "longitude": [lon],
         })
+
         st.map(map_data, zoom=5)
 
-    st.markdown("### Source")
+    st.markdown("### Original Source")
+
     if event.get("source_url"):
         st.link_button(
             "Open Original Source",
@@ -809,84 +934,50 @@ def show_disaster_dialog(event):
         st.write("Original source link is unavailable.")
 
     st.caption(
-        "Times are displayed in UTC. Information may change as "
-        "official agencies update their reports."
+        "All times are UTC. Information may change as agencies "
+        "publish updated reports."
     )
 
 
 # =========================================================
-# Filtering
-# =========================================================
-def filter_events(events, selected_hazard):
-    if selected_hazard == "ALL":
-        return events
-
-    return [
-        event for event in events
-        if event.get("hazard") == selected_hazard
-    ]
-
-
-def filter_articles(articles, selected_hazard):
-    if selected_hazard == "ALL":
-        return articles
-
-    keywords = HAZARD_KEYWORDS.get(selected_hazard, [])
-
-    filtered = []
-    for article in articles:
-        text = (
-            str(article.get("title", "")) + " " +
-            str(article.get("description", ""))
-        ).lower()
-
-        if article.get("hazard") == selected_hazard or any(
-            keyword.lower() in text for keyword in keywords
-        ):
-            filtered.append(article)
-
-    return filtered
-
-
-# =========================================================
-# Main app
+# MAIN
 # =========================================================
 if "hazard" not in st.session_state:
     st.session_state["hazard"] = "ALL"
 
+# 1. Large UTC clock
 render_utc_header()
 
+# 2. Main title
 st.markdown(
     """
-    <div style="text-align:center; padding:0 0 12px 0;">
-        <div style="
-            font-size:clamp(25px, 4vw, 40px);
-            font-weight:900;
-            letter-spacing:1px;
-        ">WORLD DISASTER LIVE</div>
-        <div style="color:#9ca3af; font-size:14px; margin-top:4px;">
-            Global natural disaster monitoring dashboard
-        </div>
+    <div class="main-title">WORLD DISASTER LIVE</div>
+    <div class="main-subtitle">
+        Global Natural Disaster Monitoring Dashboard
     </div>
     """,
     unsafe_allow_html=True,
 )
 
+# 3. Working horizontal menu
 render_hazard_menu()
 
 selected_hazard = st.session_state["hazard"]
 
 st.divider()
 
-left, right = st.columns([4, 1])
+# 4. Refresh button
+title_col, refresh_col = st.columns([4, 1])
 
-with left:
+with title_col:
     if selected_hazard == "ALL":
         st.subheader("Latest Global Disaster Reports")
     else:
-        st.subheader(f"{get_hazard_label(selected_hazard)} Reports")
+        st.subheader(
+            f"{get_hazard_label(selected_hazard)} Reports"
+        )
 
-with right:
+with refresh_col:
     if st.button("Refresh Data", use_container_width=True):
         load_earthquakes.clear()
         load_gdacs_events.clear()
@@ -894,105 +985,108 @@ with right:
         st.session_state.pop("selected_event", None)
         st.rerun()
 
-
+# 5. Fetch data
 with st.spinner("Loading disaster reports..."):
-    earthquakes = load_earthquakes()
+    earthquake_events = load_earthquakes()
     gdacs_events = load_gdacs_events()
-    all_events = earthquakes + gdacs_events
 
-    # Keep the event list free of duplicate IDs.
-    deduped = {}
-    for event in all_events:
-        deduped[event.get("id", event.get("title", ""))] = event
-    all_events = list(deduped.values())
+    combined_events = earthquake_events + gdacs_events
 
-    all_events.sort(
-        key=lambda item: item.get("time") or "",
+    # Remove duplicate event IDs.
+    deduplicated_events = {}
+
+    for event in combined_events:
+        event_key = event.get("id") or event.get("title", "")
+        deduplicated_events[event_key] = event
+
+    combined_events = list(deduplicated_events.values())
+
+    combined_events.sort(
+        key=lambda event: event.get("time") or "",
         reverse=True,
     )
 
-    filtered_events = filter_events(all_events, selected_hazard)
-
-    # Query news for the selected hazard, then filter again
-    # using the same selected category.
-    all_articles = load_news(selected_hazard)
-    filtered_articles = filter_articles(
-        all_articles,
+    visible_events = filter_events(
+        combined_events,
         selected_hazard,
     )
 
+    news_articles = load_news(selected_hazard)
+    visible_articles = filter_articles(
+        news_articles,
+        selected_hazard,
+    )
 
-# Summary metrics
-total_events = len(filtered_events)
-total_articles = len(filtered_articles)
+# 6. Summary metrics
+event_count = len(visible_events)
+article_count = len(visible_articles)
 earthquake_count = sum(
-    1 for event in filtered_events
+    1 for event in visible_events
     if event.get("hazard") == "EARTHQUAKE"
 )
 
-m1, m2, m3 = st.columns(3)
+metric1, metric2, metric3 = st.columns(3)
 
-with m1:
-    st.metric("Disaster Reports", total_events)
+metric1.metric("Disaster Reports", event_count)
+metric2.metric("Related News Articles", article_count)
+metric3.metric("Earthquake Reports", earthquake_count)
 
-with m2:
-    st.metric("Related News Articles", total_articles)
+# 7. Event cards
+st.markdown(
+    '<div class="section-title">Live Events</div>',
+    unsafe_allow_html=True,
+)
 
-with m3:
-    st.metric("Earthquake Reports", earthquake_count)
-
-
-st.markdown('<div class="section-title">Live Events</div>', unsafe_allow_html=True)
-
-if not filtered_events:
+if not visible_events:
     st.info(
         f"No matching {get_hazard_label(selected_hazard)} events "
-        "were found in the currently available feeds. Try Refresh Data "
-        "or select another category."
+        "were found in the available feeds. Try Refresh Data or "
+        "select another category."
     )
 else:
-    # Show up to 30 event cards.
-    display_events = filtered_events[:30]
+    displayed_events = visible_events[:30]
 
-    for start in range(0, len(display_events), 3):
-        event_row = display_events[start:start + 3]
+    for start in range(0, len(displayed_events), 3):
+        event_group = displayed_events[start:start + 3]
         columns = st.columns(3, gap="medium")
 
         for offset, (column, event) in enumerate(
-            zip(columns, event_row)
+            zip(columns, event_group)
         ):
             with column:
                 event_card(event, start + offset)
 
-
+# 8. Related news
 st.divider()
+
 st.markdown(
     '<div class="section-title">Related News</div>',
     unsafe_allow_html=True,
 )
 
-if not filtered_articles:
+if not visible_articles:
     st.info(
         "No related news articles were found for this category. "
-        "Try refreshing the feed."
+        "Try refreshing the data."
     )
 else:
-    for start in range(0, min(len(filtered_articles), 12), 2):
-        row_articles = filtered_articles[start:start + 2]
+    displayed_articles = visible_articles[:12]
+
+    for start in range(0, len(displayed_articles), 2):
+        article_group = displayed_articles[start:start + 2]
         columns = st.columns(2, gap="medium")
 
-        for column, article in zip(columns, row_articles):
+        for column, article in zip(columns, article_group):
             with column:
                 article_card(article, start)
 
-
-# Show selected event details in a centered dialog.
+# 9. Selected event dialog
 selected_event = st.session_state.get("selected_event")
 
 if selected_event:
     show_disaster_dialog(selected_event)
 
-
+# 10. Sources and disclaimer
 st.divider()
 
 st.markdown(
@@ -1000,14 +1094,14 @@ st.markdown(
     <div style="
         color:#9ca3af;
         font-size:12px;
-        line-height:1.7;
+        line-height:1.8;
     ">
-        <b>Data sources:</b> USGS Earthquake Hazards Program,
-        GDACS, and Google News RSS.<br>
+        <b>Data Sources:</b> USGS Earthquake Hazards Program,
+        GDACS, Google News RSS.<br>
         This dashboard aggregates public reports and news.
         News reports are not necessarily official confirmations.
-        Missing values are shown as unknown rather than estimated.<br>
-        All displayed timestamps use UTC.
+        Missing damage figures are shown as unknown rather than estimated.<br>
+        All timestamps use Coordinated Universal Time (UTC).
     </div>
     """,
     unsafe_allow_html=True,

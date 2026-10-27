@@ -1,8 +1,9 @@
 
 import html
 import logging
+import re
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
 import pandas as pd
@@ -12,7 +13,7 @@ import streamlit.components.v1 as components
 
 
 # =========================================================
-# 1. APP CONFIGURATION
+# 1. CONFIG
 # =========================================================
 st.set_page_config(
     page_title="WORLD DISASTER LIVE",
@@ -22,9 +23,6 @@ st.set_page_config(
 
 logging.basicConfig(level=logging.ERROR)
 
-REQUEST_TIMEOUT = 15
-
-# Main theme colors
 BG = "#0f172a"
 PANEL = "#172033"
 PANEL_HOVER = "#1e293b"
@@ -33,10 +31,9 @@ TEXT = "#f8fafc"
 MUTED = "#94a3b8"
 ACCENT = "#38bdf8"
 
-USGS_URL = (
-    "https://earthquake.usgs.gov/earthquakes/feed/v1.0/"
-    "summary/all_day.geojson"
-)
+REQUEST_TIMEOUT = 20
+
+USGS_QUERY_URL = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 GDACS_URL = "https://www.gdacs.org/xml/rss.xml"
 GOOGLE_NEWS_URL = "https://news.google.com/rss/search"
 
@@ -107,7 +104,7 @@ HAZARD_COLORS = {
 
 
 # =========================================================
-# 2. GLOBAL CSS
+# 2. CSS — NAVY THEME
 # =========================================================
 st.markdown(
     f"""
@@ -123,8 +120,7 @@ st.markdown(
         --accent-color: {ACCENT};
     }}
 
-    html,
-    body,
+    html, body,
     [data-testid="stAppViewContainer"],
     [data-testid="stMain"],
     [data-testid="stHeader"],
@@ -133,34 +129,10 @@ st.markdown(
         color: {TEXT} !important;
     }}
 
-    [data-testid="stAppViewContainer"] {{
-        background: {BG} !important;
-    }}
-
-    [data-testid="stMain"] {{
-        background: {BG} !important;
-    }}
-
     [data-testid="stMainBlockContainer"] {{
         max-width: 1600px;
         padding-top: 0.4rem;
         padding-bottom: 2.5rem;
-    }}
-
-    [data-testid="stHeader"] {{
-        background: {BG} !important;
-    }}
-
-    [data-testid="stToolbar"] {{
-        background: {BG} !important;
-    }}
-
-    body,
-    p,
-    label,
-    span,
-    div {{
-        scrollbar-color: #475569 {BG};
     }}
 
     .main-title {{
@@ -169,8 +141,7 @@ st.markdown(
         font-size: clamp(27px, 4vw, 43px);
         font-weight: 900;
         letter-spacing: 1px;
-        margin-top: 0.4rem;
-        margin-bottom: 0.2rem;
+        margin: 0.4rem 0 0.2rem;
     }}
 
     .main-subtitle {{
@@ -235,7 +206,6 @@ st.markdown(
         line-height: 1.8;
     }}
 
-    /* All Streamlit buttons */
     div[data-testid="stButton"] > button {{
         width: 100%;
         min-height: 44px;
@@ -264,12 +234,6 @@ st.markdown(
         border-color: {ACCENT} !important;
     }}
 
-    div[data-testid="stButton"] > button[kind="primary"]:hover {{
-        background: #7dd3fc !important;
-        border-color: #7dd3fc !important;
-    }}
-
-    /* Metric panels */
     [data-testid="stMetric"] {{
         background: {PANEL} !important;
         border: 1px solid {BORDER} !important;
@@ -286,14 +250,50 @@ st.markdown(
         color: {TEXT} !important;
     }}
 
-    /* News containers and general bordered containers */
     [data-testid="stVerticalBlockBorderWrapper"] > div {{
         background: {PANEL} !important;
         border-color: {BORDER} !important;
         border-radius: 12px !important;
     }}
 
-    /* Links */
+    [data-baseweb="select"] > div,
+    [data-baseweb="input"] > div,
+    [data-baseweb="textarea"] > div {{
+        background: {PANEL} !important;
+        border-color: {BORDER} !important;
+        color: {TEXT} !important;
+    }}
+
+    [data-testid="stDateInput"] input {{
+        background: {PANEL} !important;
+        color: {TEXT} !important;
+    }}
+
+    [data-testid="stDialog"] {{
+        background: rgba(2, 6, 23, 0.82) !important;
+    }}
+
+    [data-testid="stDialog"] > div {{
+        background: {BG} !important;
+        border: 1px solid {BORDER} !important;
+        border-radius: 16px !important;
+    }}
+
+    [data-testid="stDialog"] h1,
+    [data-testid="stDialog"] h2,
+    [data-testid="stDialog"] h3,
+    [data-testid="stDialog"] p,
+    [data-testid="stDialog"] label {{
+        color: {TEXT};
+    }}
+
+    [data-testid="stAlert"] {{
+        background: {PANEL} !important;
+        border: 1px solid {BORDER} !important;
+        color: {TEXT} !important;
+        border-radius: 10px;
+    }}
+
     a {{
         color: {ACCENT};
     }}
@@ -305,61 +305,10 @@ st.markdown(
         border-radius: 8px;
     }}
 
-    div[data-testid="stLinkButton"] > a:hover {{
-        background: {PANEL_HOVER} !important;
-        border-color: #64748b !important;
-    }}
-
-    /* Dividers */
     hr {{
         border-color: {BORDER} !important;
     }}
 
-    /* Alerts */
-    [data-testid="stAlert"] {{
-        background: {PANEL} !important;
-        border: 1px solid {BORDER} !important;
-        color: {TEXT} !important;
-        border-radius: 10px;
-    }}
-
-    /* Inputs, select boxes, text areas */
-    [data-baseweb="select"] > div,
-    [data-baseweb="input"] > div,
-    [data-baseweb="textarea"] > div {{
-        background: {PANEL} !important;
-        border-color: {BORDER} !important;
-        color: {TEXT} !important;
-    }}
-
-    /* Dialog backdrop and dialog window */
-    [data-testid="stDialog"] {{
-        background: rgba(2, 6, 23, 0.82) !important;
-    }}
-
-    [data-testid="stDialog"] > div {{
-        background: {BG} !important;
-        border: 1px solid {BORDER} !important;
-        border-radius: 16px !important;
-    }}
-
-    [data-testid="stDialog"] [data-testid="stVerticalBlock"] {{
-        background: transparent;
-    }}
-
-    [data-testid="stDialog"] h1,
-    [data-testid="stDialog"] h2,
-    [data-testid="stDialog"] h3,
-    [data-testid="stDialog"] p,
-    [data-testid="stDialog"] label {{
-        color: {TEXT};
-    }}
-
-    [data-testid="stDialog"] [data-testid="stMetric"] {{
-        background: {PANEL} !important;
-    }}
-
-    /* Footer text */
     .footer-note {{
         color: {MUTED};
         font-size: 12px;
@@ -367,17 +316,9 @@ st.markdown(
     }}
 
     @media (max-width: 700px) {{
-        .main-title {{
-            font-size: 27px;
-        }}
-
-        .main-subtitle {{
-            font-size: 12px;
-        }}
-
-        .event-card {{
-            min-height: auto;
-        }}
+        .main-title {{ font-size: 27px; }}
+        .main-subtitle {{ font-size: 12px; }}
+        .event-card {{ min-height: auto; }}
     }}
     </style>
     """,
@@ -386,7 +327,7 @@ st.markdown(
 
 
 # =========================================================
-# 3. LARGE UTC CLOCK
+# 3. UTC CLOCK
 # =========================================================
 def render_utc_header():
     components.html(
@@ -396,10 +337,7 @@ def render_utc_header():
         <head>
         <meta charset="utf-8">
         <style>
-            * {{
-                box-sizing: border-box;
-            }}
-
+            * {{ box-sizing: border-box; }}
             html, body {{
                 margin: 0;
                 padding: 0;
@@ -409,7 +347,6 @@ def render_utc_header():
                 font-family: Arial, Helvetica, sans-serif;
                 overflow: hidden;
             }}
-
             .header {{
                 position: relative;
                 width: 100%;
@@ -421,23 +358,19 @@ def render_utc_header():
                 background: {BG};
                 border-bottom: 1px solid {BORDER};
             }}
-
             .clock-area {{
                 width: 100%;
                 text-align: center;
             }}
-
             #clock {{
                 font-size: clamp(76px, 11vw, 132px);
                 font-weight: 900;
                 line-height: 1.05;
                 letter-spacing: 4px;
                 color: #ffffff;
-                text-shadow: 0 0 22px rgba(56,189,248,0.12);
                 font-variant-numeric: tabular-nums;
                 white-space: nowrap;
             }}
-
             .utc {{
                 display: inline-block;
                 margin-top: 10px;
@@ -450,7 +383,6 @@ def render_utc_header():
                 font-weight: 800;
                 letter-spacing: 5px;
             }}
-
             #date {{
                 position: absolute;
                 top: 24px;
@@ -462,7 +394,6 @@ def render_utc_header():
                 line-height: 1.6;
                 white-space: nowrap;
             }}
-
             .date-label {{
                 display: block;
                 font-size: 11px;
@@ -470,28 +401,21 @@ def render_utc_header():
                 letter-spacing: 2px;
                 margin-bottom: 3px;
             }}
-
             @media (max-width: 700px) {{
                 .header {{
                     min-height: 170px;
                     padding: 52px 5px 15px;
                 }}
-
                 #clock {{
                     font-size: clamp(48px, 12vw, 76px);
                     letter-spacing: 1px;
                 }}
-
                 #date {{
                     top: 6px;
                     right: 8px;
                     font-size: 12px;
                 }}
-
-                .date-label {{
-                    font-size: 9px;
-                }}
-
+                .date-label {{ font-size: 9px; }}
                 .utc {{
                     font-size: 12px;
                     margin-top: 8px;
@@ -499,36 +423,30 @@ def render_utc_header():
             }}
         </style>
         </head>
-
         <body>
             <div class="header">
                 <div class="clock-area">
                     <div id="clock">00:00:00</div>
                     <div class="utc">UTC</div>
                 </div>
-
                 <div id="date">
                     <span class="date-label">CURRENT DATE</span>
                     <span id="date-value">0000-00-00</span>
                 </div>
             </div>
-
             <script>
                 function updateClock() {{
                     const now = new Date();
                     const pad = n => String(n).padStart(2, "0");
-
                     document.getElementById("clock").textContent =
                         pad(now.getUTCHours()) + ":" +
                         pad(now.getUTCMinutes()) + ":" +
                         pad(now.getUTCSeconds());
-
                     document.getElementById("date-value").textContent =
                         now.getUTCFullYear() + "-" +
                         pad(now.getUTCMonth() + 1) + "-" +
                         pad(now.getUTCDate());
                 }}
-
                 updateClock();
                 setInterval(updateClock, 1000);
             </script>
@@ -541,19 +459,15 @@ def render_utc_header():
 
 
 # =========================================================
-# 4. FUNCTIONAL HORIZONTAL HAZARD MENU
+# 4. HAZARD MENU
 # =========================================================
 def render_hazard_menu():
     st.markdown(
-        """
-        <div class="menu-heading">SELECT DISASTER TYPE</div>
-        """,
+        '<div class="menu-heading">SELECT DISASTER TYPE</div>',
         unsafe_allow_html=True,
     )
 
     selected = st.session_state.get("hazard", "ALL")
-
-    # Wide, horizontal menu: 6 buttons on row 1, 5 on row 2.
     rows = [HAZARDS[:6], HAZARDS[6:]]
 
     for row in rows:
@@ -613,10 +527,15 @@ def format_utc(value):
     return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+def clean_html_text(value):
+    value = safe_text(value, "")
+    value = html.unescape(value)
+    value = re.sub(r"<[^>]+>", " ", value)
+    return " ".join(value.split())
+
+
 def fetch_text(url, params=None):
-    headers = {
-        "User-Agent": "WorldDisasterLive/1.0"
-    }
+    headers = {"User-Agent": "WorldDisasterLive/1.0"}
 
     try:
         response = requests.get(
@@ -633,25 +552,20 @@ def fetch_text(url, params=None):
         return None
 
 
-def fetch_json(url):
-    import json
-
-    content = fetch_text(url)
-
-    if not content:
-        return None
-
+def fetch_json(url, params=None):
     try:
-        return json.loads(content)
-    except ValueError:
+        response = requests.get(
+            url,
+            params=params,
+            headers={"User-Agent": "WorldDisasterLive/1.0"},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    except (requests.RequestException, ValueError) as exc:
+        logging.error("JSON request failed: %s", exc)
         return None
-
-
-def clean_html_text(value):
-    value = safe_text(value, "")
-    value = html.unescape(value)
-    value = __import__("re").sub(r"<[^>]+>", " ", value)
-    return " ".join(value.split())
 
 
 def classify_hazard(text):
@@ -664,26 +578,6 @@ def classify_hazard(text):
     return "ALL"
 
 
-def get_coordinates(event):
-    lat = event.get("latitude")
-    lon = event.get("longitude")
-
-    try:
-        if lat is None or lon is None:
-            return None
-
-        lat = float(lat)
-        lon = float(lon)
-
-        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-            return None
-
-        return lat, lon
-
-    except (TypeError, ValueError):
-        return None
-
-
 def get_hazard_label(code):
     return HAZARD_LABELS.get(
         code,
@@ -691,12 +585,158 @@ def get_hazard_label(code):
     )
 
 
+def get_coordinates(event):
+    try:
+        lat = float(event["latitude"])
+        lon = float(event["longitude"])
+
+        if -90 <= lat <= 90 and -180 <= lon <= 180:
+            return lat, lon
+
+    except (KeyError, TypeError, ValueError):
+        pass
+
+    return None
+
+
+def date_start_utc(selected_date):
+    return datetime.combine(
+        selected_date,
+        time.min,
+        tzinfo=timezone.utc,
+    )
+
+
+def date_end_utc(selected_date):
+    return datetime.combine(
+        selected_date,
+        time.max,
+        tzinfo=timezone.utc,
+    )
+
+
+def is_in_date_range(value, start_date, end_date):
+    dt = parse_datetime(value)
+
+    if dt is None:
+        # Unknown timestamp cannot be confidently assigned to a period.
+        return False
+
+    start_dt = date_start_utc(start_date)
+    end_dt = date_end_utc(end_date)
+
+    return start_dt <= dt <= end_dt
+
+
 # =========================================================
-# 6. USGS EARTHQUAKES
+# 6. DATE RANGE CONTROLS
+# =========================================================
+def render_period_selector():
+    today_utc = datetime.now(timezone.utc).date()
+    default_start = today_utc - timedelta(days=6)
+
+    if "period_start" not in st.session_state:
+        st.session_state["period_start"] = default_start
+
+    if "period_end" not in st.session_state:
+        st.session_state["period_end"] = today_utc
+
+    st.markdown(
+        '<div class="section-title">Reporting Period (UTC)</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.caption(
+        "Choose the start and end dates. The selected dates are "
+        "interpreted in UTC, including the full end date."
+    )
+
+    with st.container(border=True):
+        col_start, col_end, col_apply, col_reset = st.columns(
+            [2, 2, 1.2, 1.2],
+            gap="medium",
+        )
+
+        with col_start:
+            start_date = st.date_input(
+                "Start date (UTC)",
+                value=st.session_state["period_start"],
+                min_value=date(1970, 1, 1),
+                max_value=today_utc,
+                key="period_start_input",
+            )
+
+        with col_end:
+            end_date = st.date_input(
+                "End date (UTC)",
+                value=st.session_state["period_end"],
+                min_value=date(1970, 1, 1),
+                max_value=today_utc,
+                key="period_end_input",
+            )
+
+        with col_apply:
+            st.write("")
+            st.write("")
+            apply_clicked = st.button(
+                "Apply Period",
+                type="primary",
+                use_container_width=True,
+            )
+
+        with col_reset:
+            st.write("")
+            st.write("")
+            reset_clicked = st.button(
+                "Last 7 Days",
+                use_container_width=True,
+            )
+
+    if reset_clicked:
+        st.session_state["period_start"] = default_start
+        st.session_state["period_end"] = today_utc
+        st.session_state.pop("selected_event", None)
+        st.rerun()
+
+    if apply_clicked:
+        if start_date > end_date:
+            st.error("Start date must be earlier than or equal to end date.")
+        else:
+            st.session_state["period_start"] = start_date
+            st.session_state["period_end"] = end_date
+            st.session_state.pop("selected_event", None)
+            st.rerun()
+
+    # Use applied dates, not unsubmitted date picker changes.
+    applied_start = st.session_state["period_start"]
+    applied_end = st.session_state["period_end"]
+
+    if applied_start > applied_end:
+        st.warning("The selected date range is invalid.")
+        return default_start, today_utc
+
+    st.caption(
+        f"Applied period: {applied_start.isoformat()} — "
+        f"{applied_end.isoformat()} (UTC)"
+    )
+
+    return applied_start, applied_end
+
+
+# =========================================================
+# 7. USGS EARTHQUAKE QUERY FOR SELECTED DATES
 # =========================================================
 @st.cache_data(ttl=300, show_spinner=False)
-def load_earthquakes():
-    payload = fetch_json(USGS_URL)
+def load_earthquakes(start_iso, end_iso):
+    params = {
+        "format": "geojson",
+        "starttime": start_iso,
+        "endtime": end_iso,
+        "orderby": "time",
+        "limit": 20000,
+    }
+
+    payload = fetch_json(USGS_QUERY_URL, params=params)
     events = []
 
     if not payload:
@@ -727,9 +767,7 @@ def load_earthquakes():
         )
 
         events.append({
-            "id": str(
-                feature.get("id", props.get("url", location))
-            ),
+            "id": str(feature.get("id", props.get("url", location))),
             "title": f"M{magnitude} Earthquake — {location}",
             "hazard": "EARTHQUAKE",
             "location": location,
@@ -742,10 +780,7 @@ def load_earthquakes():
             "depth_km": depth,
             "felt": props.get("felt"),
             "alert": props.get("alert"),
-            "description": safe_text(
-                props.get("title"),
-                location,
-            ),
+            "description": safe_text(props.get("title"), location),
             "damage": "Not confirmed by this feed",
         })
 
@@ -758,7 +793,7 @@ def load_earthquakes():
 
 
 # =========================================================
-# 7. GDACS RSS EVENTS
+# 8. GDACS RSS EVENTS
 # =========================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def load_gdacs_events():
@@ -800,7 +835,7 @@ def load_gdacs_events():
                 ).isoformat()
 
             except (TypeError, ValueError, OverflowError):
-                event_time = None
+                pass
 
         events.append({
             "id": link or title,
@@ -820,16 +855,11 @@ def load_gdacs_events():
             "damage": "Check the official source",
         })
 
-    events.sort(
-        key=lambda event: event.get("time") or "",
-        reverse=True,
-    )
-
     return events
 
 
 # =========================================================
-# 8. GOOGLE NEWS RSS
+# 9. GOOGLE NEWS RSS FOR SELECTED DATES
 # =========================================================
 def google_news_query(hazard):
     queries = {
@@ -853,9 +883,23 @@ def google_news_query(hazard):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_news(hazard):
+def load_news(hazard, start_date_iso, end_date_iso):
+    start_date = date.fromisoformat(start_date_iso)
+    end_date = date.fromisoformat(end_date_iso)
+
+    # Google News supports date operators in its search query.
+    # The after date is exclusive, so use the day before the start.
+    after_date = start_date - timedelta(days=1)
+    before_date = end_date + timedelta(days=1)
+
+    query = (
+        f"{google_news_query(hazard)} "
+        f"after:{after_date.isoformat()} "
+        f"before:{before_date.isoformat()}"
+    )
+
     params = {
-        "q": google_news_query(hazard),
+        "q": query,
         "hl": "en-US",
         "gl": "US",
         "ceid": "US:en",
@@ -905,7 +949,11 @@ def load_news(hazard):
                 ).isoformat()
 
             except (TypeError, ValueError, OverflowError):
-                event_time = None
+                pass
+
+        # Apply an additional local date check to RSS results.
+        if not is_in_date_range(event_time, start_date, end_date):
+            continue
 
         classified = classify_hazard(
             f"{title} {description}"
@@ -933,11 +981,11 @@ def load_news(hazard):
         reverse=True,
     )
 
-    return articles[:40]
+    return articles[:60]
 
 
 # =========================================================
-# 9. FILTERING
+# 10. FILTERS
 # =========================================================
 def filter_events(events, selected_hazard):
     if selected_hazard == "ALL":
@@ -972,7 +1020,7 @@ def filter_articles(articles, selected_hazard):
 
 
 # =========================================================
-# 10. EVENT CARDS
+# 11. EVENT CARDS
 # =========================================================
 def event_card(event, index):
     hazard = event.get("hazard", "ALL")
@@ -1017,21 +1065,14 @@ def event_card(event, index):
 
 
 # =========================================================
-# 11. NEWS CARDS
+# 12. NEWS CARDS
 # =========================================================
 def article_card(article, index):
-    title = safe_text(
-        article.get("title"),
-        "Untitled report",
-    )
-    source = safe_text(
-        article.get("source"),
-        "News source",
-    )
+    title = safe_text(article.get("title"), "Untitled report")
+    source = safe_text(article.get("source"), "News source")
 
     with st.container(border=True):
         st.markdown(f"**{title}**")
-
         st.caption(
             f"{source} · {format_utc(article.get('time'))}"
         )
@@ -1048,7 +1089,7 @@ def article_card(article, index):
 
 
 # =========================================================
-# 12. DISASTER DETAIL DIALOG
+# 13. EVENT DETAIL DIALOG
 # =========================================================
 @st.dialog("Disaster Details", width="large")
 def show_disaster_dialog(event):
@@ -1081,7 +1122,7 @@ def show_disaster_dialog(event):
         st.write("**Location**")
         st.write(safe_text(event.get("location")))
 
-        st.write("**Reported time**")
+        st.write("**Reported time (UTC)**")
         st.write(format_utc(event.get("time")))
 
     with col2:
@@ -1104,12 +1145,10 @@ def show_disaster_dialog(event):
             "Magnitude",
             str(magnitude) if magnitude is not None else "Unknown",
         )
-
         m2.metric(
             "Depth",
             f"{depth} km" if depth is not None else "Unknown",
         )
-
         m3.metric(
             "Felt reports",
             str(felt) if felt is not None else "Unknown",
@@ -1139,12 +1178,13 @@ def show_disaster_dialog(event):
         st.markdown("### Location Map")
         st.caption(f"Coordinates: {lat:.4f}, {lon:.4f}")
 
-        map_data = pd.DataFrame({
-            "latitude": [lat],
-            "longitude": [lon],
-        })
-
-        st.map(map_data, zoom=5)
+        st.map(
+            pd.DataFrame({
+                "latitude": [lat],
+                "longitude": [lon],
+            }),
+            zoom=5,
+        )
 
     st.markdown("### Original Source")
 
@@ -1164,15 +1204,13 @@ def show_disaster_dialog(event):
 
 
 # =========================================================
-# 13. MAIN APP
+# 14. MAIN
 # =========================================================
 if "hazard" not in st.session_state:
     st.session_state["hazard"] = "ALL"
 
-# Top clock and date
 render_utc_header()
 
-# Main title
 st.markdown(
     """
     <div class="main-title">WORLD DISASTER LIVE</div>
@@ -1183,8 +1221,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Functional disaster menu
 render_hazard_menu()
+
+# Date range selector
+period_start, period_end = render_period_selector()
 
 selected_hazard = st.session_state["hazard"]
 
@@ -1194,17 +1234,14 @@ title_col, refresh_col = st.columns([4, 1])
 
 with title_col:
     if selected_hazard == "ALL":
-        st.subheader("Latest Global Disaster Reports")
+        st.subheader("Disaster Reports for Selected Period")
     else:
         st.subheader(
             f"{get_hazard_label(selected_hazard)} Reports"
         )
 
 with refresh_col:
-    if st.button(
-        "Refresh Data",
-        use_container_width=True,
-    ):
+    if st.button("Refresh Data", use_container_width=True):
         load_earthquakes.clear()
         load_gdacs_events.clear()
         load_news.clear()
@@ -1212,14 +1249,37 @@ with refresh_col:
         st.rerun()
 
 
-# Fetch live data
-with st.spinner("Loading disaster reports..."):
-    earthquake_events = load_earthquakes()
+# Convert selected dates to UTC API query parameters.
+period_start_iso = date_start_utc(period_start).strftime(
+    "%Y-%m-%dT%H:%M:%S"
+)
+period_end_iso = date_end_utc(period_end).strftime(
+    "%Y-%m-%dT%H:%M:%S"
+)
+
+with st.spinner("Loading reports for the selected period..."):
+    # USGS can query earthquakes over the chosen date range.
+    earthquake_events = load_earthquakes(
+        period_start_iso,
+        period_end_iso,
+    )
+
+    # GDACS RSS contains a limited set of recent reports.
+    # Filter it locally by the report timestamp.
     gdacs_events = load_gdacs_events()
+
+    gdacs_events = [
+        event for event in gdacs_events
+        if is_in_date_range(
+            event.get("time"),
+            period_start,
+            period_end,
+        )
+    ]
 
     combined_events = earthquake_events + gdacs_events
 
-    # Remove duplicate events
+    # Remove duplicate event IDs.
     deduplicated_events = {}
 
     for event in combined_events:
@@ -1238,7 +1298,11 @@ with st.spinner("Loading disaster reports..."):
         selected_hazard,
     )
 
-    news_articles = load_news(selected_hazard)
+    news_articles = load_news(
+        selected_hazard,
+        period_start.isoformat(),
+        period_end.isoformat(),
+    )
 
     visible_articles = filter_articles(
         news_articles,
@@ -1246,7 +1310,7 @@ with st.spinner("Loading disaster reports..."):
     )
 
 
-# Summary metrics
+# Metrics
 event_count = len(visible_events)
 article_count = len(visible_articles)
 
@@ -1262,20 +1326,19 @@ metric2.metric("Related News Articles", article_count)
 metric3.metric("Earthquake Reports", earthquake_count)
 
 
-# Live event cards
+# Event cards
 st.markdown(
-    '<div class="section-title">Live Events</div>',
+    '<div class="section-title">Disaster Events</div>',
     unsafe_allow_html=True,
 )
 
 if not visible_events:
     st.info(
-        f"No matching {get_hazard_label(selected_hazard)} events "
-        "were found in the available feeds. Try Refresh Data or "
-        "select another category."
+        "No matching events were found in the available data for "
+        "this period. Try another date range or refresh the data."
     )
 else:
-    displayed_events = visible_events[:30]
+    displayed_events = visible_events[:60]
 
     for start in range(0, len(displayed_events), 3):
         event_group = displayed_events[start:start + 3]
@@ -1288,7 +1351,7 @@ else:
                 event_card(event, start + offset)
 
 
-# Related news
+# News cards
 st.divider()
 
 st.markdown(
@@ -1298,11 +1361,11 @@ st.markdown(
 
 if not visible_articles:
     st.info(
-        "No related news articles were found for this category. "
-        "Try refreshing the data."
+        "No related news articles were found for this period. "
+        "The news provider may not have matching articles available."
     )
 else:
-    displayed_articles = visible_articles[:12]
+    displayed_articles = visible_articles[:20]
 
     for start in range(0, len(displayed_articles), 2):
         article_group = displayed_articles[start:start + 2]
@@ -1313,7 +1376,7 @@ else:
                 article_card(article, start)
 
 
-# Detail dialog
+# Event detail dialog
 selected_event = st.session_state.get("selected_event")
 
 if selected_event:
@@ -1324,15 +1387,14 @@ if selected_event:
 st.divider()
 
 st.markdown(
-    f"""
+    """
     <div class="footer-note">
         <b>Data Sources:</b> USGS Earthquake Hazards Program,
         GDACS, Google News RSS.<br>
         This dashboard aggregates public reports and news.
         News reports are not necessarily official confirmations.
         Missing damage figures are shown as unknown rather than estimated.<br>
-        All timestamps use Coordinated Universal Time (UTC).
-        <br><br>
+        All timestamps use Coordinated Universal Time (UTC).<br><br>
         <span style="color:#64748b;">WORLD DISASTER LIVE</span>
     </div>
     """,

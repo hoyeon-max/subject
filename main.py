@@ -1,730 +1,677 @@
-
-import html
-import logging
+# main.py
 import re
-import xml.etree.ElementTree as ET
-from datetime import date, datetime, time, timedelta, timezone
-from email.utils import parsedate_to_datetime
-
-import pandas as pd
+import html
+import time
 import requests
+import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+import xml.etree.ElementTree as ET
 
+from datetime import datetime, date, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from urllib.parse import quote
 
 # =========================================================
-# 1. CONFIG
+# 기본 설정
 # =========================================================
 st.set_page_config(
     page_title="WORLD DISASTER LIVE",
+    page_icon="🌍",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-logging.basicConfig(level=logging.ERROR)
-
 BG = "#0f172a"
-PANEL = "#172033"
-PANEL_HOVER = "#1e293b"
+PANEL = "#172238"
 BORDER = "#334155"
-TEXT = "#f8fafc"
+TEXT = "#e2e8f0"
 MUTED = "#94a3b8"
 ACCENT = "#38bdf8"
 
-REQUEST_TIMEOUT = 20
+UTC = timezone.utc
 
-USGS_QUERY_URL = "https://earthquake.usgs.gov/fdsnws/event/1/query"
+USGS_URL = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 GDACS_URL = "https://www.gdacs.org/xml/rss.xml"
-GOOGLE_NEWS_URL = "https://news.google.com/rss/search"
+NEWS_URL = "https://news.google.com/rss/search"
 
 HAZARDS = [
-    ("All", "ALL"),
-    ("Typhoon", "TYPHOON"),
-    ("Earthquake", "EARTHQUAKE"),
-    ("Wildfire", "WILDFIRE"),
-    ("Flood", "FLOOD"),
-    ("Heavy Rain", "HEAVY_RAIN"),
-    ("Drought", "DROUGHT"),
-    ("Heavy Snow", "HEAVY_SNOW"),
-    ("Heatwave", "HEATWAVE"),
-    ("Cold Wave", "COLD_WAVE"),
-    ("Landslide", "LANDSLIDE"),
+    "All",
+    "Typhoon",
+    "Earthquake",
+    "Wildfire",
+    "Flood",
+    "Heavy Rain",
+    "Drought",
+    "Heavy Snow",
+    "Heatwave",
+    "Cold Wave",
+    "Landslide",
 ]
 
-HAZARD_LABELS = dict(HAZARDS)
-
-HAZARD_KEYWORDS = {
-    "TYPHOON": [
-        "typhoon", "hurricane", "cyclone",
-        "tropical storm", "tropical cyclone",
-    ],
-    "EARTHQUAKE": [
-        "earthquake", "seismic", "aftershock",
-    ],
-    "WILDFIRE": [
-        "wildfire", "forest fire", "bushfire", "wild fire",
-    ],
-    "FLOOD": [
-        "flood", "flash flood", "flooding", "inundation",
-    ],
-    "HEAVY_RAIN": [
-        "heavy rain", "torrential rain", "downpour",
-        "monsoon rain",
-    ],
-    "DROUGHT": [
-        "drought", "water shortage",
-    ],
-    "HEAVY_SNOW": [
-        "heavy snow", "snowstorm", "blizzard", "snowfall",
-    ],
-    "HEATWAVE": [
-        "heatwave", "heat wave", "extreme heat",
-    ],
-    "COLD_WAVE": [
-        "cold wave", "extreme cold", "cold snap",
-    ],
-    "LANDSLIDE": [
-        "landslide", "mudslide", "rockslide",
-    ],
+HAZARD_KO = {
+    "All": "전체 재난",
+    "Typhoon": "태풍",
+    "Earthquake": "지진",
+    "Wildfire": "산불",
+    "Flood": "홍수",
+    "Heavy Rain": "폭우",
+    "Drought": "가뭄",
+    "Heavy Snow": "폭설",
+    "Heatwave": "폭염",
+    "Cold Wave": "한파",
+    "Landslide": "산사태",
 }
 
-HAZARD_COLORS = {
-    "ALL": "#cbd5e1",
-    "TYPHOON": "#c4b5fd",
-    "EARTHQUAKE": "#f87171",
-    "WILDFIRE": "#fb923c",
-    "FLOOD": "#60a5fa",
-    "HEAVY_RAIN": "#22d3ee",
-    "DROUGHT": "#facc15",
-    "HEAVY_SNOW": "#e2e8f0",
-    "HEATWAVE": "#fb7185",
-    "COLD_WAVE": "#7dd3fc",
-    "LANDSLIDE": "#d6a77a",
-}
-
+SORT_OPTIONS = [
+    "최신순",
+    "사상자순",
+    "재산피해순",
+    "기간순",
+    "지진 규모순",
+    "태풍 강도순",
+]
 
 # =========================================================
-# 2. CSS — NAVY THEME
+# CSS
 # =========================================================
 st.markdown(
     f"""
     <style>
-    :root {{
-        color-scheme: dark;
-        --app-bg: {BG};
-        --panel-bg: {PANEL};
-        --panel-hover: {PANEL_HOVER};
-        --border-color: {BORDER};
-        --main-text: {TEXT};
-        --muted-text: {MUTED};
-        --accent-color: {ACCENT};
+    .stApp {{
+        background: {BG};
+        color: {TEXT};
     }}
-
-    html, body,
-    [data-testid="stAppViewContainer"],
-    [data-testid="stMain"],
-    [data-testid="stHeader"],
-    [data-testid="stToolbar"] {{
-        background-color: {BG} !important;
-        color: {TEXT} !important;
+    header[data-testid="stHeader"] {{
+        background: {BG};
     }}
-
-    [data-testid="stMainBlockContainer"] {{
+    section[data-testid="stSidebar"] {{
+        background: {BG};
+    }}
+    h1, h2, h3, h4, p, label, span, div {{
+        color: inherit;
+    }}
+    .block-container {{
+        padding-top: 1rem;
+        padding-bottom: 3rem;
         max-width: 1600px;
-        padding-top: 0.4rem;
-        padding-bottom: 2.5rem;
     }}
-
     .main-title {{
-        color: {TEXT};
         text-align: center;
-        font-size: clamp(27px, 4vw, 43px);
+        font-size: 2.6rem;
         font-weight: 900;
-        letter-spacing: 1px;
-        margin: 0.4rem 0 0.2rem;
+        letter-spacing: 0.12rem;
+        color: #f8fafc;
+        margin: 0.2rem 0 0.2rem 0;
     }}
-
-    .main-subtitle {{
-        color: {MUTED};
+    .subtitle {{
         text-align: center;
-        font-size: 14px;
-        margin-bottom: 1.2rem;
-    }}
-
-    .menu-heading {{
-        width: 100%;
-        padding: 10px 0 9px;
         color: {MUTED};
-        font-size: 12px;
-        font-weight: 800;
-        letter-spacing: 1.7px;
+        font-size: 0.95rem;
+        margin-bottom: 1rem;
     }}
-
     .section-title {{
-        color: {TEXT};
-        font-size: 1.2rem;
+        font-size: 1.15rem;
         font-weight: 800;
-        margin: 1rem 0 0.7rem;
+        color: #f8fafc;
+        margin: 1.2rem 0 0.65rem 0;
     }}
-
-    .event-card {{
-        box-sizing: border-box;
+    .event-card, .news-card {{
+        background: {PANEL};
         border: 1px solid {BORDER};
         border-radius: 14px;
-        padding: 17px;
-        min-height: 180px;
-        background: {PANEL};
-        margin-bottom: 8px;
-        overflow-wrap: anywhere;
-        transition: border-color 0.15s ease,
-                    background 0.15s ease;
+        padding: 1rem;
+        margin-bottom: 0.8rem;
+        min-height: 150px;
     }}
-
-    .event-card:hover {{
-        border-color: #64748b;
-        background: {PANEL_HOVER};
-    }}
-
-    .event-type {{
-        font-size: 0.75rem;
-        font-weight: 800;
-        letter-spacing: 1.1px;
-        margin-bottom: 8px;
-    }}
-
     .event-title {{
-        color: {TEXT};
-        font-size: 1rem;
-        font-weight: 750;
-        line-height: 1.5;
-        margin-bottom: 10px;
+        font-size: 1.03rem;
+        font-weight: 800;
+        line-height: 1.45;
+        color: #f8fafc;
+        overflow-wrap: anywhere;
     }}
-
     .event-meta {{
         color: {MUTED};
-        font-size: 0.82rem;
-        line-height: 1.8;
+        font-size: 0.86rem;
+        margin-top: 0.45rem;
+        line-height: 1.65;
     }}
-
-    div[data-testid="stButton"] > button {{
-        width: 100%;
-        min-height: 44px;
-        border-radius: 9px;
-        font-weight: 700;
+    .metric-card {{
+        background: {PANEL};
         border: 1px solid {BORDER};
-        transition: background 0.15s ease,
-                    border-color 0.15s ease;
+        border-radius: 12px;
+        padding: 0.8rem;
+        text-align: center;
+        min-height: 90px;
     }}
-
-    div[data-testid="stButton"] > button[kind="secondary"] {{
-        background: {PANEL} !important;
-        color: {TEXT} !important;
-        border-color: {BORDER} !important;
-    }}
-
-    div[data-testid="stButton"] > button[kind="secondary"]:hover {{
-        background: {PANEL_HOVER} !important;
-        border-color: #64748b !important;
-        color: #ffffff !important;
-    }}
-
-    div[data-testid="stButton"] > button[kind="primary"] {{
-        background: {ACCENT} !important;
-        color: #082f49 !important;
-        border-color: {ACCENT} !important;
-    }}
-
-    [data-testid="stMetric"] {{
-        background: {PANEL} !important;
-        border: 1px solid {BORDER} !important;
-        border-radius: 12px !important;
-        padding: 13px 16px !important;
-    }}
-
-    [data-testid="stMetricLabel"],
-    [data-testid="stMetricLabel"] p {{
-        color: {MUTED} !important;
-    }}
-
-    [data-testid="stMetricValue"] {{
-        color: {TEXT} !important;
-    }}
-
-    [data-testid="stVerticalBlockBorderWrapper"] > div {{
-        background: {PANEL} !important;
-        border-color: {BORDER} !important;
-        border-radius: 12px !important;
-    }}
-
-    [data-baseweb="select"] > div,
-    [data-baseweb="input"] > div,
-    [data-baseweb="textarea"] > div {{
-        background: {PANEL} !important;
-        border-color: {BORDER} !important;
-        color: {TEXT} !important;
-    }}
-
-    [data-testid="stDateInput"] input {{
-        background: {PANEL} !important;
-        color: {TEXT} !important;
-    }}
-
-    [data-testid="stDialog"] {{
-        background: rgba(2, 6, 23, 0.82) !important;
-    }}
-
-    [data-testid="stDialog"] > div {{
-        background: {BG} !important;
-        border: 1px solid {BORDER} !important;
-        border-radius: 16px !important;
-    }}
-
-    [data-testid="stDialog"] h1,
-    [data-testid="stDialog"] h2,
-    [data-testid="stDialog"] h3,
-    [data-testid="stDialog"] p,
-    [data-testid="stDialog"] label {{
-        color: {TEXT};
-    }}
-
-    [data-testid="stAlert"] {{
-        background: {PANEL} !important;
-        border: 1px solid {BORDER} !important;
-        color: {TEXT} !important;
-        border-radius: 10px;
-    }}
-
-    a {{
-        color: {ACCENT};
-    }}
-
-    div[data-testid="stLinkButton"] > a {{
-        background: {PANEL} !important;
-        color: {TEXT} !important;
-        border: 1px solid {BORDER} !important;
-        border-radius: 8px;
-    }}
-
-    hr {{
-        border-color: {BORDER} !important;
-    }}
-
-    .footer-note {{
+    .metric-label {{
         color: {MUTED};
-        font-size: 12px;
-        line-height: 1.8;
+        font-size: 0.85rem;
     }}
-
-    @media (max-width: 700px) {{
-        .main-title {{ font-size: 27px; }}
-        .main-subtitle {{ font-size: 12px; }}
-        .event-card {{ min-height: auto; }}
+    .metric-value {{
+        color: #f8fafc;
+        font-size: 1.35rem;
+        font-weight: 800;
+        margin-top: 0.3rem;
+    }}
+    div.stButton > button {{
+        border-radius: 9px;
+        border: 1px solid {BORDER};
+        background: {PANEL};
+        color: {TEXT};
+        font-weight: 700;
+        min-height: 2.5rem;
+    }}
+    div.stButton > button:hover {{
+        border-color: {ACCENT};
+        color: #7dd3fc;
+    }}
+    div[data-testid="stSelectbox"] > label,
+    div[data-testid="stDateInput"] > label {{
+        color: {TEXT};
+        font-weight: 700;
+    }}
+    a {{
+        color: #7dd3fc !important;
+    }}
+    hr {{
+        border-color: {BORDER};
     }}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
+# =========================================================
+# 시간과 문자열 유틸리티
+# =========================================================
+def utc_now():
+    return datetime.now(UTC)
+
+
+def to_utc_datetime(value):
+    """문자열 또는 datetime을 UTC datetime으로 변환."""
+    if not value:
+        return None
+
+    try:
+        if isinstance(value, datetime):
+            dt = value
+        else:
+            text = str(value).strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            dt = datetime.fromisoformat(text)
+
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+
+        return dt.astimezone(UTC)
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def parse_rss_date(value):
+    if not value:
+        return None
+    try:
+        dt = parsedate_to_datetime(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
+    except (ValueError, TypeError, OverflowError):
+        return to_utc_datetime(value)
+
+
+def fmt_time(value):
+    dt = to_utc_datetime(value)
+    if not dt:
+        return "시간 미확인"
+    return dt.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def safe_text(value):
+    if value is None:
+        return ""
+    return html.unescape(re.sub(r"<[^>]*>", " ", str(value))).strip()
+
+
+def get_tag_text(element, tag_names):
+    """XML에서 네임스페이스 여부와 관계없이 태그 이름을 찾음."""
+    wanted = {x.lower() for x in tag_names}
+
+    for child in element.iter():
+        local_name = child.tag.split("}")[-1].lower()
+        if local_name in wanted and child.text:
+            value = child.text.strip()
+            if value:
+                return value
+
+    return ""
+
+
+def parse_number(value):
+    if value is None:
+        return None
+    try:
+        match = re.search(r"-?\d+(?:\.\d+)?", str(value).replace(",", ""))
+        return float(match.group(0)) if match else None
+    except (ValueError, TypeError):
+        return None
+
+
+def compact_number(value):
+    if value is None:
+        return "미확인"
+    return f"{value:,.0f}"
+
+
+def parse_duration_days(text):
+    """
+    설명에 기간이 명시된 경우에만 기간을 추출.
+    명시되지 않은 기간을 임의로 추정하지 않음.
+    """
+    text = safe_text(text).lower()
+
+    patterns = [
+        r"\b(\d+(?:\.\d+)?)\s*days?\b",
+        r"\b(\d+(?:\.\d+)?)\s*hours?\b",
+        r"\b(\d+(?:\.\d+)?)\s*weeks?\b",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            amount = float(match.group(1))
+            if "hour" in pattern:
+                return amount / 24
+            if "week" in pattern:
+                return amount * 7
+            return amount
+
+    return None
+
+
+def parse_casualties(text):
+    """
+    공개된 설명에서 명시적인 사망·부상 숫자만 추출.
+    각 항목이 확인되지 않으면 None으로 둠.
+    """
+    text = safe_text(text).lower()
+
+    fatal_patterns = [
+        r"\b(\d[\d,]*)\s+(?:people\s+)?(?:were\s+)?killed\b",
+        r"\b(\d[\d,]*)\s+fatalities\b",
+        r"\bdeaths?\s*:\s*(\d[\d,]*)\b",
+        r"\b(\d[\d,]*)\s+deaths?\b",
+    ]
+    injured_patterns = [
+        r"\b(\d[\d,]*)\s+(?:people\s+)?injured\b",
+        r"\b(\d[\d,]*)\s+wounded\b",
+        r"\binjured\s*:\s*(\d[\d,]*)\b",
+    ]
+
+    def first_match(patterns):
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                try:
+                    return int(match.group(1).replace(",", ""))
+                except ValueError:
+                    pass
+        return None
+
+    deaths = first_match(fatal_patterns)
+    injured = first_match(injured_patterns)
+
+    if deaths is None and injured is None:
+        return None
+
+    return (deaths or 0) + (injured or 0)
+
+
+def parse_damage_amount(text):
+    """
+    USD 재산 피해액이 명시된 경우에만 추출.
+    원문에 명시된 달러 단위를 기준으로 환산.
+    """
+    text = safe_text(text).lower()
+
+    patterns = [
+        r"(?:damage|losses|economic losses|property damage)"
+        r"[^.]{0,50}?\$\s*(\d+(?:\.\d+)?)\s*(billion|million|thousand|bn|mn|m|b)?",
+        r"\$\s*(\d+(?:\.\d+)?)\s*(billion|million|thousand|bn|mn|m|b)"
+        r"[^.]{0,40}?(?:damage|losses|damages)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+
+        amount = float(match.group(1))
+        unit = (match.group(2) or "").lower()
+
+        if unit in ("billion", "bn", "b"):
+            amount *= 1_000_000_000
+        elif unit in ("million", "mn", "m"):
+            amount *= 1_000_000
+        elif unit == "thousand":
+            amount *= 1_000
+
+        return amount
+
+    return None
+
+
+def parse_magnitude(text):
+    patterns = [
+        r"\b(?:magnitude|mag)\s*(?:of|:|=)?\s*(\d+(?:\.\d+)?)",
+        r"\bmw\s*(\d+(?:\.\d+)?)",
+    ]
+    text = safe_text(text).lower()
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return float(match.group(1))
+
+    return None
+
+
+def parse_wind_kmh(text):
+    """
+    풍속이 수치와 단위로 명시된 경우 km/h로 통일.
+    숫자만 있거나 단위가 없으면 추정하지 않음.
+    """
+    text = safe_text(text).lower()
+
+    patterns = [
+        (r"\b(\d+(?:\.\d+)?)\s*km/h\b", 1.0),
+        (r"\b(\d+(?:\.\d+)?)\s*kph\b", 1.0),
+        (r"\b(\d+(?:\.\d+)?)\s*mph\b", 1.60934),
+        (r"\b(\d+(?:\.\d+)?)\s*knots?\b", 1.852),
+        (r"\b(\d+(?:\.\d+)?)\s*kt\b", 1.852),
+    ]
+
+    for pattern, factor in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return float(match.group(1)) * factor
+
+    return None
+
+
+def parse_typhoon_category(text):
+    text = safe_text(text).lower()
+
+    # Category 1–5 등 공식 범주가 명시된 경우만 사용
+    match = re.search(r"\bcategory\s*([1-5])\b", text)
+    if match:
+        return int(match.group(1))
+
+    match = re.search(r"\b(cat)\s*([1-5])\b", text)
+    if match:
+        return int(match.group(2))
+
+    # 풍속은 category가 아닌 별도 수치로 보관
+    return None
+
+
+def identify_hazard(title, description="", category=""):
+    text = f"{title} {description} {category}".lower()
+
+    if any(x in text for x in ["earthquake", "seismic", "地震"]):
+        return "Earthquake"
+    if any(x in text for x in ["typhoon", "hurricane", "cyclone", "tropical storm"]):
+        return "Typhoon"
+    if any(x in text for x in ["wildfire", "forest fire", "bushfire"]):
+        return "Wildfire"
+    if any(x in text for x in ["landslide", "mudslide"]):
+        return "Landslide"
+    if any(x in text for x in ["drought"]):
+        return "Drought"
+    if any(x in text for x in ["heavy snow", "snowstorm", "blizzard"]):
+        return "Heavy Snow"
+    if any(x in text for x in ["heatwave", "heat wave", "extreme heat"]):
+        return "Heatwave"
+    if any(x in text for x in ["cold wave", "coldwave", "extreme cold"]):
+        return "Cold Wave"
+    if any(x in text for x in ["flood", "flash flood", "inundation"]):
+        return "Flood"
+    if any(x in text for x in ["heavy rain", "extreme rainfall", "rainstorm"]):
+        return "Heavy Rain"
+
+    return "Other"
+
+
+def hazard_ko(hazard):
+    return HAZARD_KO.get(hazard, "기타 재난")
+
+
+def make_event(
+    event_id,
+    title,
+    hazard,
+    location,
+    event_time,
+    description="",
+    source_url="",
+    source="",
+    latitude=None,
+    longitude=None,
+    magnitude=None,
+    fatalities=None,
+    injured=None,
+    property_damage=None,
+    duration_days=None,
+    wind_kmh=None,
+    typhoon_category=None,
+    end_time=None,
+):
+    description = safe_text(description)
+    combined = f"{title} {description}"
+
+    casualties = None
+    if fatalities is not None or injured is not None:
+        casualties = (fatalities or 0) + (injured or 0)
+    else:
+        casualties = parse_casualties(combined)
+
+    if property_damage is None:
+        property_damage = parse_damage_amount(combined)
+
+    if magnitude is None and hazard == "Earthquake":
+        magnitude = parse_magnitude(combined)
+
+    if wind_kmh is None and hazard == "Typhoon":
+        wind_kmh = parse_wind_kmh(combined)
+
+    if typhoon_category is None and hazard == "Typhoon":
+        typhoon_category = parse_typhoon_category(combined)
+
+    start_dt = to_utc_datetime(event_time)
+    end_dt = to_utc_datetime(end_time)
+
+    if duration_days is None and start_dt and end_dt and end_dt >= start_dt:
+        duration_days = (end_dt - start_dt).total_seconds() / 86400
+
+    if duration_days is None:
+        duration_days = parse_duration_days(combined)
+
+    return {
+        "id": str(event_id),
+        "title": safe_text(title) or "제목 미확인",
+        "hazard": hazard,
+        "location": safe_text(location) or "지역 미확인",
+        "time": start_dt,
+        "end_time": end_dt,
+        "description": description,
+        "source_url": source_url or "",
+        "source": source or "",
+        "latitude": parse_number(latitude),
+        "longitude": parse_number(longitude),
+        "magnitude": parse_number(magnitude),
+        "casualties": casualties,
+        "property_damage": parse_number(property_damage),
+        "duration_days": parse_number(duration_days),
+        "wind_kmh": parse_number(wind_kmh),
+        "typhoon_category": parse_number(typhoon_category),
+    }
+
 
 # =========================================================
-# 3. UTC CLOCK
+# UTC 시계
 # =========================================================
 def render_utc_header():
     components.html(
-        f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <meta charset="utf-8">
-        <style>
-            * {{ box-sizing: border-box; }}
-            html, body {{
-                margin: 0;
-                padding: 0;
-                width: 100%;
-                background: {BG};
-                color: {TEXT};
-                font-family: Arial, Helvetica, sans-serif;
-                overflow: hidden;
-            }}
-            .header {{
-                position: relative;
-                width: 100%;
-                min-height: 205px;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                padding: 20px 190px 24px;
-                background: {BG};
-                border-bottom: 1px solid {BORDER};
-            }}
-            .clock-area {{
-                width: 100%;
-                text-align: center;
-            }}
-            #clock {{
-                font-size: clamp(76px, 11vw, 132px);
-                font-weight: 900;
-                line-height: 1.05;
-                letter-spacing: 4px;
-                color: #ffffff;
-                font-variant-numeric: tabular-nums;
-                white-space: nowrap;
-            }}
-            .utc {{
-                display: inline-block;
-                margin-top: 10px;
-                padding: 5px 16px;
-                border: 1px solid #475569;
-                border-radius: 6px;
-                color: #cbd5e1;
-                background: {PANEL};
-                font-size: 15px;
-                font-weight: 800;
-                letter-spacing: 5px;
-            }}
-            #date {{
-                position: absolute;
-                top: 24px;
-                right: 20px;
-                text-align: right;
-                color: #f1f5f9;
-                font-size: 16px;
-                font-weight: 700;
-                line-height: 1.6;
-                white-space: nowrap;
-            }}
-            .date-label {{
-                display: block;
-                font-size: 11px;
-                color: {MUTED};
-                letter-spacing: 2px;
-                margin-bottom: 3px;
-            }}
-            @media (max-width: 700px) {{
-                .header {{
-                    min-height: 170px;
-                    padding: 52px 5px 15px;
-                }}
-                #clock {{
-                    font-size: clamp(48px, 12vw, 76px);
-                    letter-spacing: 1px;
-                }}
-                #date {{
-                    top: 6px;
-                    right: 8px;
-                    font-size: 12px;
-                }}
-                .date-label {{ font-size: 9px; }}
-                .utc {{
-                    font-size: 12px;
-                    margin-top: 8px;
-                }}
-            }}
-        </style>
-        </head>
-        <body>
-            <div class="header">
-                <div class="clock-area">
-                    <div id="clock">00:00:00</div>
-                    <div class="utc">UTC</div>
-                </div>
-                <div id="date">
-                    <span class="date-label">CURRENT DATE</span>
-                    <span id="date-value">0000-00-00</span>
-                </div>
-            </div>
-            <script>
-                function updateClock() {{
-                    const now = new Date();
-                    const pad = n => String(n).padStart(2, "0");
-                    document.getElementById("clock").textContent =
-                        pad(now.getUTCHours()) + ":" +
-                        pad(now.getUTCMinutes()) + ":" +
-                        pad(now.getUTCSeconds());
-                    document.getElementById("date-value").textContent =
-                        now.getUTCFullYear() + "-" +
-                        pad(now.getUTCMonth() + 1) + "-" +
-                        pad(now.getUTCDate());
-                }}
-                updateClock();
-                setInterval(updateClock, 1000);
-            </script>
-        </body>
-        </html>
+        """
+        <div style="
+            position:relative;
+            font-family:Arial,sans-serif;
+            background:#0f172a;
+            color:#f8fafc;
+            padding:4px 0 10px 0;
+            text-align:center;
+        ">
+          <div id="clock" style="
+            font-size:clamp(42px,7vw,76px);
+            font-weight:900;
+            letter-spacing:2px;
+            line-height:1.1;
+          ">--:--:--</div>
+          <div style="
+            color:#94a3b8;
+            font-size:13px;
+            letter-spacing:3px;
+            margin-top:3px;
+          ">UTC</div>
+          <div id="clockdate" style="
+            position:absolute;
+            right:5px;
+            top:8px;
+            color:#94a3b8;
+            font-size:12px;
+            text-align:right;
+          ">----</div>
+        </div>
+        <script>
+          function tick() {
+            const now = new Date();
+            const opts = {
+              timeZone: "UTC",
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+              hour12: false
+            };
+            document.getElementById("clock").textContent =
+              new Intl.DateTimeFormat("en-GB", opts).format(now);
+            document.getElementById("clockdate").textContent =
+              new Intl.DateTimeFormat("en-GB", {
+                timeZone:"UTC",
+                year:"numeric",
+                month:"short",
+                day:"2-digit"
+              }).format(now) + " UTC";
+          }
+          tick();
+          setInterval(tick, 1000);
+        </script>
         """,
-        height=220,
+        height=120,
         scrolling=False,
     )
 
 
 # =========================================================
-# 4. HAZARD MENU
+# 날짜 필터
 # =========================================================
-def render_hazard_menu():
-    st.markdown(
-        '<div class="menu-heading">SELECT DISASTER TYPE</div>',
-        unsafe_allow_html=True,
-    )
-
-    selected = st.session_state.get("hazard", "ALL")
-    rows = [HAZARDS[:6], HAZARDS[6:]]
-
-    for row in rows:
-        columns = st.columns(len(row), gap="small")
-
-        for column, (label, code) in zip(columns, row):
-            with column:
-                active = selected == code
-                button_label = f"● {label}" if active else label
-
-                if st.button(
-                    button_label,
-                    key=f"hazard_button_{code}",
-                    use_container_width=True,
-                    type="primary" if active else "secondary",
-                ):
-                    st.session_state["hazard"] = code
-                    st.session_state.pop("selected_event", None)
-                    st.rerun()
-
-
-# =========================================================
-# 5. COMMON UTILITIES
-# =========================================================
-def safe_text(value, default="Unknown"):
-    if value is None:
-        return default
-
-    value = str(value).strip()
-    return value if value else default
-
-
-def parse_datetime(value):
-    if not value:
-        return None
-
-    try:
-        dt = datetime.fromisoformat(
-            str(value).replace("Z", "+00:00")
-        )
-
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-
-        return dt.astimezone(timezone.utc)
-
-    except (ValueError, TypeError):
-        return None
-
-
-def format_utc(value):
-    dt = parse_datetime(value)
-
-    if not dt:
-        return "Unknown"
-
-    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-
-
-def clean_html_text(value):
-    value = safe_text(value, "")
-    value = html.unescape(value)
-    value = re.sub(r"<[^>]+>", " ", value)
-    return " ".join(value.split())
-
-
-def fetch_text(url, params=None):
-    headers = {"User-Agent": "WorldDisasterLive/1.0"}
-
-    try:
-        response = requests.get(
-            url,
-            params=params,
-            headers=headers,
-            timeout=REQUEST_TIMEOUT,
-        )
-        response.raise_for_status()
-        return response.text
-
-    except requests.RequestException as exc:
-        logging.error("Request failed: %s", exc)
-        return None
-
-
-def fetch_json(url, params=None):
-    try:
-        response = requests.get(
-            url,
-            params=params,
-            headers={"User-Agent": "WorldDisasterLive/1.0"},
-            timeout=REQUEST_TIMEOUT,
-        )
-        response.raise_for_status()
-        return response.json()
-
-    except (requests.RequestException, ValueError) as exc:
-        logging.error("JSON request failed: %s", exc)
-        return None
-
-
-def classify_hazard(text):
-    lower_text = (text or "").lower()
-
-    for hazard_code, keywords in HAZARD_KEYWORDS.items():
-        if any(keyword.lower() in lower_text for keyword in keywords):
-            return hazard_code
-
-    return "ALL"
-
-
-def get_hazard_label(code):
-    return HAZARD_LABELS.get(
-        code,
-        code.replace("_", " ").title(),
-    )
-
-
-def get_coordinates(event):
-    try:
-        lat = float(event["latitude"])
-        lon = float(event["longitude"])
-
-        if -90 <= lat <= 90 and -180 <= lon <= 180:
-            return lat, lon
-
-    except (KeyError, TypeError, ValueError):
-        pass
-
-    return None
-
-
-def date_start_utc(selected_date):
-    return datetime.combine(
-        selected_date,
-        time.min,
-        tzinfo=timezone.utc,
-    )
-
-
-def date_end_utc(selected_date):
-    return datetime.combine(
-        selected_date,
-        time.max,
-        tzinfo=timezone.utc,
-    )
-
-
-def is_in_date_range(value, start_date, end_date):
-    dt = parse_datetime(value)
-
-    if dt is None:
-        # Unknown timestamp cannot be confidently assigned to a period.
-        return False
-
-    start_dt = date_start_utc(start_date)
-    end_dt = date_end_utc(end_date)
-
-    return start_dt <= dt <= end_dt
-
-
-# =========================================================
-# 6. DATE RANGE CONTROLS
-# =========================================================
-def render_period_selector():
-    today_utc = datetime.now(timezone.utc).date()
-    default_start = today_utc - timedelta(days=6)
+def initialize_period():
+    today = utc_now().date()
 
     if "period_start" not in st.session_state:
-        st.session_state["period_start"] = default_start
-
+        st.session_state.period_start = today - timedelta(days=6)
     if "period_end" not in st.session_state:
-        st.session_state["period_end"] = today_utc
+        st.session_state.period_end = today
 
-    st.markdown(
-        '<div class="section-title">Reporting Period (UTC)</div>',
-        unsafe_allow_html=True,
-    )
+    if "period_start_input" not in st.session_state:
+        st.session_state.period_start_input = st.session_state.period_start
+    if "period_end_input" not in st.session_state:
+        st.session_state.period_end_input = st.session_state.period_end
 
-    st.caption(
-        "Choose the start and end dates. The selected dates are "
-        "interpreted in UTC, including the full end date."
-    )
 
-    with st.container(border=True):
-        col_start, col_end, col_apply, col_reset = st.columns(
-            [2, 2, 1.2, 1.2],
-            gap="medium",
+def render_period_selector():
+    initialize_period()
+
+    st.markdown('<div class="section-title">Date Range (UTC)</div>', unsafe_allow_html=True)
+
+    today = utc_now().date()
+
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+
+    with c1:
+        start_date = st.date_input(
+            "시작 날짜",
+            key="period_start_input",
+            min_value=date(2000, 1, 1),
+            max_value=today,
         )
 
-        with col_start:
-            start_date = st.date_input(
-                "Start date (UTC)",
-                value=st.session_state["period_start"],
-                min_value=date(1970, 1, 1),
-                max_value=today_utc,
-                key="period_start_input",
-            )
+    with c2:
+        end_date = st.date_input(
+            "종료 날짜",
+            key="period_end_input",
+            min_value=date(2000, 1, 1),
+            max_value=today,
+        )
 
-        with col_end:
-            end_date = st.date_input(
-                "End date (UTC)",
-                value=st.session_state["period_end"],
-                min_value=date(1970, 1, 1),
-                max_value=today_utc,
-                key="period_end_input",
-            )
+    with c3:
+        if st.button("Apply Period", use_container_width=True):
+            if start_date > end_date:
+                st.error("시작 날짜는 종료 날짜보다 늦을 수 없습니다.")
+            else:
+                st.session_state.period_start = start_date
+                st.session_state.period_end = end_date
+                st.rerun()
 
-        with col_apply:
-            st.write("")
-            st.write("")
-            apply_clicked = st.button(
-                "Apply Period",
-                type="primary",
-                use_container_width=True,
-            )
-
-        with col_reset:
-            st.write("")
-            st.write("")
-            reset_clicked = st.button(
-                "Last 7 Days",
-                use_container_width=True,
-            )
-
-    if reset_clicked:
-        st.session_state["period_start"] = default_start
-        st.session_state["period_end"] = today_utc
-        st.session_state.pop("selected_event", None)
-        st.rerun()
-
-    if apply_clicked:
-        if start_date > end_date:
-            st.error("Start date must be earlier than or equal to end date.")
-        else:
-            st.session_state["period_start"] = start_date
-            st.session_state["period_end"] = end_date
-            st.session_state.pop("selected_event", None)
+    with c4:
+        if st.button("Last 7 Days", use_container_width=True):
+            st.session_state.period_start = today - timedelta(days=6)
+            st.session_state.period_end = today
+            st.session_state.period_start_input = today - timedelta(days=6)
+            st.session_state.period_end_input = today
             st.rerun()
 
-    # Use applied dates, not unsubmitted date picker changes.
-    applied_start = st.session_state["period_start"]
-    applied_end = st.session_state["period_end"]
+    if st.session_state.period_start > st.session_state.period_end:
+        st.warning("시작 날짜와 종료 날짜를 확인해 주세요.")
+        return None, None
 
-    if applied_start > applied_end:
-        st.warning("The selected date range is invalid.")
-        return default_start, today_utc
-
-    st.caption(
-        f"Applied period: {applied_start.isoformat()} — "
-        f"{applied_end.isoformat()} (UTC)"
+    start_dt = datetime.combine(
+        st.session_state.period_start, datetime.min.time(), tzinfo=UTC
+    )
+    end_dt = datetime.combine(
+        st.session_state.period_end + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=UTC,
     )
 
-    return applied_start, applied_end
+    st.caption(
+        f"선택 기간: {start_dt:%Y-%m-%d} 00:00 UTC "
+        f"~ {st.session_state.period_end:%Y-%m-%d} 23:59 UTC"
+    )
+
+    return start_dt, end_dt
+
+
+def is_in_period(dt, start_dt, end_dt):
+    dt = to_utc_datetime(dt)
+    return bool(dt and start_dt and end_dt and start_dt <= dt < end_dt)
 
 
 # =========================================================
-# 7. USGS EARTHQUAKE QUERY FOR SELECTED DATES
+# USGS 지진 데이터
 # =========================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def load_earthquakes(start_iso, end_iso):
@@ -733,169 +680,160 @@ def load_earthquakes(start_iso, end_iso):
         "starttime": start_iso,
         "endtime": end_iso,
         "orderby": "time",
-        "limit": 20000,
+        "limit": 1000,
     }
 
-    payload = fetch_json(USGS_QUERY_URL, params=params)
+    response = requests.get(
+        USGS_URL,
+        params=params,
+        timeout=25,
+        headers={"User-Agent": "WorldDisasterLive/1.0"},
+    )
+    response.raise_for_status()
+    payload = response.json()
+
     events = []
-
-    if not payload:
-        return events
-
     for feature in payload.get("features", []):
         props = feature.get("properties", {}) or {}
         geometry = feature.get("geometry", {}) or {}
-        coords = geometry.get("coordinates", [])
-
-        lon = coords[0] if len(coords) > 0 else None
-        lat = coords[1] if len(coords) > 1 else None
-        depth = coords[2] if len(coords) > 2 else None
-
-        timestamp_ms = props.get("time")
-        event_time = None
-
-        if timestamp_ms is not None:
-            event_time = datetime.fromtimestamp(
-                timestamp_ms / 1000,
-                tz=timezone.utc,
-            ).isoformat()
+        coords = geometry.get("coordinates", []) or []
 
         magnitude = props.get("mag")
-        location = safe_text(
-            props.get("place"),
-            "Location unavailable",
+        place = props.get("place") or "지역 미확인"
+
+        timestamp = props.get("time")
+        event_time = None
+        if timestamp is not None:
+            event_time = datetime.fromtimestamp(timestamp / 1000, tz=UTC)
+
+        longitude = coords[0] if len(coords) > 0 else None
+        latitude = coords[1] if len(coords) > 1 else None
+
+        title = props.get("title") or (
+            f"M{magnitude} earthquake - {place}"
+            if magnitude is not None
+            else f"Earthquake - {place}"
         )
 
-        events.append({
-            "id": str(feature.get("id", props.get("url", location))),
-            "title": f"M{magnitude} Earthquake — {location}",
-            "hazard": "EARTHQUAKE",
-            "location": location,
-            "time": event_time,
-            "source": "USGS",
-            "source_url": props.get("url"),
-            "latitude": lat,
-            "longitude": lon,
-            "magnitude": magnitude,
-            "depth_km": depth,
-            "felt": props.get("felt"),
-            "alert": props.get("alert"),
-            "description": safe_text(props.get("title"), location),
-            "damage": "Not confirmed by this feed",
-        })
-
-    events.sort(
-        key=lambda event: event.get("time") or "",
-        reverse=True,
-    )
+        events.append(
+            make_event(
+                event_id=feature.get("id") or props.get("code") or title,
+                title=title,
+                hazard="Earthquake",
+                location=place,
+                event_time=event_time,
+                description=props.get("alert") or "",
+                source_url=props.get("url") or "",
+                source="USGS",
+                latitude=latitude,
+                longitude=longitude,
+                magnitude=magnitude,
+            )
+        )
 
     return events
 
 
 # =========================================================
-# 8. GDACS RSS EVENTS
+# GDACS RSS 재난 데이터
 # =========================================================
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def load_gdacs_events():
-    xml_content = fetch_text(GDACS_URL)
+    response = requests.get(
+        GDACS_URL,
+        timeout=25,
+        headers={"User-Agent": "WorldDisasterLive/1.0"},
+    )
+    response.raise_for_status()
+
+    root = ET.fromstring(response.content)
     events = []
 
-    if not xml_content:
-        return events
-
-    try:
-        root = ET.fromstring(xml_content)
-    except ET.ParseError:
-        return events
-
-    for item in root.findall(".//item"):
-        title = clean_html_text(item.findtext("title", ""))
-        description = clean_html_text(
-            item.findtext("description", "")
-        )
-        link = safe_text(item.findtext("link"), "")
-        pub_date = item.findtext("pubDate", "")
-
-        hazard = classify_hazard(f"{title} {description}")
-
-        if hazard == "ALL":
+    for item in root.iter():
+        if item.tag.split("}")[-1].lower() != "item":
             continue
 
-        event_time = None
+        title = get_tag_text(item, ["title"])
+        description = get_tag_text(item, ["description", "summary"])
+        link = get_tag_text(item, ["link"])
+        guid = get_tag_text(item, ["guid"])
+        pub_date = get_tag_text(item, ["pubDate", "published", "updated"])
+        category = get_tag_text(item, ["category", "eventtype", "eventType"])
 
-        if pub_date:
-            try:
-                parsed = parsedate_to_datetime(pub_date)
+        event_time = parse_rss_date(pub_date)
+        hazard = identify_hazard(title, description, category)
 
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=timezone.utc)
+        # RSS 내의 시작·종료 시각이 제공될 때만 지속 기간 계산
+        start_text = get_tag_text(
+            item, ["fromdate", "fromDate", "eventstart", "starttime", "startTime"]
+        )
+        end_text = get_tag_text(
+            item, ["todate", "toDate", "eventend", "endtime", "endTime"]
+        )
+        start_time = to_utc_datetime(start_text) or event_time
+        end_time = to_utc_datetime(end_text)
 
-                event_time = parsed.astimezone(
-                    timezone.utc
-                ).isoformat()
+        # 위치 문자열은 원문에 명시된 값만 사용
+        location = get_tag_text(item, ["location", "country", "area"])
+        if not location:
+            location = title
 
-            except (TypeError, ValueError, OverflowError):
-                pass
+        latitude = get_tag_text(item, ["lat", "latitude"])
+        longitude = get_tag_text(item, ["lon", "long", "longitude"])
 
-        events.append({
-            "id": link or title,
-            "title": title or "GDACS disaster report",
-            "hazard": hazard,
-            "location": "See source report",
-            "time": event_time,
-            "source": "GDACS",
-            "source_url": link,
-            "latitude": None,
-            "longitude": None,
-            "magnitude": None,
-            "depth_km": None,
-            "felt": None,
-            "alert": "See source report",
-            "description": description or title,
-            "damage": "Check the official source",
-        })
+        event_id = guid or link or f"{title}-{pub_date}"
 
-    return events
+        events.append(
+            make_event(
+                event_id=event_id,
+                title=title,
+                hazard=hazard,
+                location=location,
+                event_time=start_time,
+                end_time=end_time,
+                description=description,
+                source_url=link,
+                source="GDACS",
+                latitude=latitude,
+                longitude=longitude,
+            )
+        )
+
+    # RSS에 중복 항목이 있을 경우 ID로 중복 제거
+    unique = {}
+    for event in events:
+        unique[event["id"]] = event
+
+    return list(unique.values())
 
 
 # =========================================================
-# 9. GOOGLE NEWS RSS FOR SELECTED DATES
+# Google News RSS
 # =========================================================
-def google_news_query(hazard):
-    queries = {
-        "ALL": (
-            "global natural disaster OR earthquake OR typhoon "
-            "OR wildfire OR flood"
-        ),
-        "TYPHOON": "typhoon OR hurricane OR tropical cyclone",
-        "EARTHQUAKE": "earthquake",
-        "WILDFIRE": "wildfire OR forest fire",
-        "FLOOD": "flood OR flash flood",
-        "HEAVY_RAIN": "heavy rain OR torrential rain",
-        "DROUGHT": "drought",
-        "HEAVY_SNOW": "heavy snow OR blizzard",
-        "HEATWAVE": "heatwave OR extreme heat",
-        "COLD_WAVE": "cold wave OR extreme cold",
-        "LANDSLIDE": "landslide OR mudslide",
+@st.cache_data(ttl=600, show_spinner=False)
+def load_news(hazard, start_date_iso, end_date_iso):
+    query_terms = {
+        "All": "natural disaster",
+        "Typhoon": "typhoon OR hurricane OR cyclone",
+        "Earthquake": "earthquake",
+        "Wildfire": "wildfire",
+        "Flood": "flood",
+        "Heavy Rain": '"heavy rain" OR extreme rainfall',
+        "Drought": "drought",
+        "Heavy Snow": '"heavy snow" OR blizzard',
+        "Heatwave": "heatwave OR extreme heat",
+        "Cold Wave": '"cold wave" OR extreme cold',
+        "Landslide": "landslide OR mudslide",
     }
 
-    return queries.get(hazard, queries["ALL"])
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def load_news(hazard, start_date_iso, end_date_iso):
     start_date = date.fromisoformat(start_date_iso)
     end_date = date.fromisoformat(end_date_iso)
 
-    # Google News supports date operators in its search query.
-    # The after date is exclusive, so use the day before the start.
-    after_date = start_date - timedelta(days=1)
-    before_date = end_date + timedelta(days=1)
-
+    # Google News의 after/before는 일반적으로 종료일을 배타적으로 취급
     query = (
-        f"{google_news_query(hazard)} "
-        f"after:{after_date.isoformat()} "
-        f"before:{before_date.isoformat()}"
+        f"{query_terms.get(hazard, 'natural disaster')} "
+        f"after:{start_date.isoformat()} "
+        f"before:{(end_date + timedelta(days=1)).isoformat()}"
     )
 
     params = {
@@ -905,498 +843,515 @@ def load_news(hazard, start_date_iso, end_date_iso):
         "ceid": "US:en",
     }
 
-    xml_content = fetch_text(
-        GOOGLE_NEWS_URL,
+    response = requests.get(
+        NEWS_URL,
         params=params,
+        timeout=25,
+        headers={"User-Agent": "WorldDisasterLive/1.0"},
     )
+    response.raise_for_status()
 
+    root = ET.fromstring(response.content)
     articles = []
 
-    if not xml_content:
-        return articles
-
-    try:
-        root = ET.fromstring(xml_content)
-    except ET.ParseError:
-        return articles
-
-    for item in root.findall(".//item"):
-        title = clean_html_text(item.findtext("title", ""))
-        description = clean_html_text(
-            item.findtext("description", "")
-        )
-        link = safe_text(item.findtext("link"), "")
-        pub_date = item.findtext("pubDate", "")
-
-        source_node = item.find("source")
-
-        if source_node is not None and source_node.text:
-            source_name = clean_html_text(source_node.text)
-        else:
-            source_name = "Google News"
-
-        event_time = None
-
-        if pub_date:
-            try:
-                parsed = parsedate_to_datetime(pub_date)
-
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=timezone.utc)
-
-                event_time = parsed.astimezone(
-                    timezone.utc
-                ).isoformat()
-
-            except (TypeError, ValueError, OverflowError):
-                pass
-
-        # Apply an additional local date check to RSS results.
-        if not is_in_date_range(event_time, start_date, end_date):
+    for item in root.iter():
+        if item.tag.split("}")[-1].lower() != "item":
             continue
 
-        classified = classify_hazard(
-            f"{title} {description}"
+        title = get_tag_text(item, ["title"])
+        link = get_tag_text(item, ["link"])
+        pub_date = get_tag_text(item, ["pubDate", "published"])
+        description = get_tag_text(item, ["description", "summary"])
+        source = get_tag_text(item, ["source"])
+
+        published = parse_rss_date(pub_date)
+
+        if not published:
+            continue
+        if not is_in_period(
+            published,
+            datetime.combine(start_date, datetime.min.time(), tzinfo=UTC),
+            datetime.combine(end_date + timedelta(days=1), datetime.min.time(), tzinfo=UTC),
+        ):
+            continue
+
+        articles.append(
+            {
+                "title": safe_text(title),
+                "url": link,
+                "published": published,
+                "description": safe_text(description),
+                "source": safe_text(source) or "Google News",
+            }
         )
 
-        articles.append({
-            "title": title or "Untitled report",
-            "description": description,
-            "url": link,
-            "source": source_name,
-            "time": event_time,
-            "hazard": classified,
-        })
-
-    unique_articles = {}
-
+    # URL 중복 제거
+    unique = {}
     for article in articles:
-        key = article["url"] or article["title"]
-        unique_articles[key] = article
+        unique[article["url"] or article["title"]] = article
 
-    articles = list(unique_articles.values())
+    return list(unique.values())
 
-    articles.sort(
-        key=lambda article: article.get("time") or "",
+
+# =========================================================
+# 정렬 처리
+# =========================================================
+def known_first_sort(items, key, reverse=True):
+    """
+    값이 확인된 항목을 먼저 정렬하고 미확인 항목은 뒤에 배치.
+    """
+    known = [x for x in items if x.get(key) is not None]
+    unknown = [x for x in items if x.get(key) is None]
+
+    known.sort(key=lambda x: x.get(key), reverse=reverse)
+
+    # 미확인 항목도 최신순으로 정리
+    unknown.sort(
+        key=lambda x: x.get("time") or datetime.min.replace(tzinfo=UTC),
         reverse=True,
     )
 
-    return articles[:60]
+    return known + unknown
+
+
+def sort_events(events, criterion):
+    if criterion == "최신순":
+        return sorted(
+            events,
+            key=lambda x: x.get("time") or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+    if criterion == "사상자순":
+        return known_first_sort(events, "casualties", reverse=True)
+
+    if criterion == "재산피해순":
+        return known_first_sort(events, "property_damage", reverse=True)
+
+    if criterion == "기간순":
+        return known_first_sort(events, "duration_days", reverse=True)
+
+    if criterion == "지진 규모순":
+        earthquakes = [x for x in events if x["hazard"] == "Earthquake"]
+        others = [x for x in events if x["hazard"] != "Earthquake"]
+
+        earthquakes = known_first_sort(earthquakes, "magnitude", reverse=True)
+        others.sort(
+            key=lambda x: x.get("time") or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        return earthquakes + others
+
+    if criterion == "태풍 강도순":
+        typhoons = [x for x in events if x["hazard"] == "Typhoon"]
+        others = [x for x in events if x["hazard"] != "Typhoon"]
+
+        # 태풍은 공식 범주가 있으면 우선 비교하고,
+        # 범주가 없으면 풍속이 확인된 항목을 비교
+        typhoons.sort(
+            key=lambda x: (
+                x.get("typhoon_category") is not None,
+                x.get("typhoon_category") or -1,
+                x.get("wind_kmh") is not None,
+                x.get("wind_kmh") or -1,
+                x.get("time") or datetime.min.replace(tzinfo=UTC),
+            ),
+            reverse=True,
+        )
+        others.sort(
+            key=lambda x: x.get("time") or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        return typhoons + others
+
+    return events
 
 
 # =========================================================
-# 10. FILTERS
+# 카드와 상세 팝업
 # =========================================================
-def filter_events(events, selected_hazard):
-    if selected_hazard == "ALL":
-        return events
-
-    return [
-        event for event in events
-        if event.get("hazard") == selected_hazard
-    ]
+def show_value(value, suffix=""):
+    if value is None:
+        return "미확인"
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return f"{value:,}{suffix}" if isinstance(value, (int, float)) else f"{value}{suffix}"
 
 
-def filter_articles(articles, selected_hazard):
-    if selected_hazard == "ALL":
-        return articles
+def event_detail(event):
+    @st.dialog("Disaster Details", width="large")
+    def _detail():
+        st.markdown(f"### {event['title']}")
+        st.caption(
+            f"{hazard_ko(event['hazard'])} · "
+            f"{event['location']} · "
+            f"{fmt_time(event['time'])}"
+        )
 
-    keywords = HAZARD_KEYWORDS.get(selected_hazard, [])
-    filtered = []
+        st.markdown("---")
 
-    for article in articles:
-        combined = (
-            str(article.get("title", "")) + " " +
-            str(article.get("description", ""))
-        ).lower()
+        a, b, c = st.columns(3)
+        with a:
+            st.metric("사상자", show_value(event.get("casualties"), "명"))
+        with b:
+            st.metric(
+                "재산 피해",
+                (
+                    f"${event['property_damage']:,.0f}"
+                    if event.get("property_damage") is not None
+                    else "미확인"
+                ),
+            )
+        with c:
+            st.metric("지속 기간", show_value(event.get("duration_days"), "일"))
 
-        if (
-            article.get("hazard") == selected_hazard
-            or any(word.lower() in combined for word in keywords)
-        ):
-            filtered.append(article)
+        if event["hazard"] == "Earthquake":
+            st.metric("지진 규모", show_value(event.get("magnitude")))
 
-    return filtered
+        if event["hazard"] == "Typhoon":
+            x, y = st.columns(2)
+            with x:
+                st.metric(
+                    "태풍 범주",
+                    (
+                        f"Category {int(event['typhoon_category'])}"
+                        if event.get("typhoon_category") is not None
+                        else "미확인"
+                    ),
+                )
+            with y:
+                st.metric("풍속", show_value(event.get("wind_kmh"), " km/h"))
+
+        st.markdown("#### 상세 설명")
+        if event.get("description"):
+            st.write(event["description"])
+        else:
+            st.info("제공된 상세 설명이 없습니다.")
+
+        lat = event.get("latitude")
+        lon = event.get("longitude")
+
+        if lat is not None and lon is not None:
+            st.markdown("#### 위치")
+            st.write(f"위도: {lat} · 경도: {lon}")
+            map_url = f"https://www.google.com/maps?q={lat},{lon}"
+            st.link_button("지도에서 위치 보기", map_url, use_container_width=True)
+        else:
+            st.caption("좌표 정보는 제공되지 않았습니다.")
+
+        st.markdown("#### 출처")
+        st.write(event.get("source") or "출처 미확인")
+        if event.get("source_url"):
+            st.link_button(
+                "원문 / 공식 출처 열기",
+                event["source_url"],
+                use_container_width=True,
+            )
+
+    _detail()
 
 
-# =========================================================
-# 11. EVENT CARDS
-# =========================================================
-def event_card(event, index):
-    hazard = event.get("hazard", "ALL")
-    color = HAZARD_COLORS.get(hazard, "#cbd5e1")
+def render_event_card(event, index):
+    title = event.get("title") or "제목 미확인"
+    location = event.get("location") or "지역 미확인"
+    hazard_label = hazard_ko(event.get("hazard", "Other"))
 
-    title = html.escape(
-        safe_text(event.get("title"), "Untitled event")
+    if event.get("hazard") == "Earthquake":
+        strength = f" · M{event['magnitude']}" if event.get("magnitude") is not None else ""
+    elif event.get("hazard") == "Typhoon":
+        if event.get("typhoon_category") is not None:
+            strength = f" · Category {int(event['typhoon_category'])}"
+        elif event.get("wind_kmh") is not None:
+            strength = f" · {event['wind_kmh']:.0f} km/h"
+        else:
+            strength = ""
+    else:
+        strength = ""
+
+    casualties_text = show_value(event.get("casualties"), "명")
+    damage_text = (
+        f"${event['property_damage']:,.0f}"
+        if event.get("property_damage") is not None
+        else "미확인"
     )
-    location = html.escape(
-        safe_text(event.get("location"), "Unknown")
-    )
-    source = html.escape(
-        safe_text(event.get("source"), "Unknown")
-    )
-    time_text = html.escape(format_utc(event.get("time")))
-    hazard_label = html.escape(get_hazard_label(hazard))
 
     st.markdown(
         f"""
         <div class="event-card">
-            <div class="event-type" style="color:{color}">
-                {hazard_label.upper()}
-            </div>
-            <div class="event-title">{title}</div>
-            <div class="event-meta">
-                Location: {location}<br>
-                Time: {time_text}<br>
-                Source: {source}
-            </div>
+          <div class="event-title">{html.escape(title)}</div>
+          <div class="event-meta">
+            {html.escape(hazard_label)}{html.escape(strength)}<br>
+            {html.escape(location)}<br>
+            {html.escape(fmt_time(event.get("time")))}<br>
+            사상자: {html.escape(casualties_text)}
+            &nbsp; | &nbsp; 재산 피해: {html.escape(damage_text)}
+          </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    if st.button(
-        "View Details",
-        key=f"details_{index}",
-        use_container_width=True,
-    ):
-        st.session_state["selected_event"] = event
-        st.rerun()
+    if st.button("View Details", key=f"event_detail_{index}_{event['id']}", use_container_width=True):
+        event_detail(event)
 
 
-# =========================================================
-# 12. NEWS CARDS
-# =========================================================
-def article_card(article, index):
-    title = safe_text(article.get("title"), "Untitled report")
-    source = safe_text(article.get("source"), "News source")
-
-    with st.container(border=True):
-        st.markdown(f"**{title}**")
-        st.caption(
-            f"{source} · {format_utc(article.get('time'))}"
-        )
-
-        if article.get("description"):
-            st.write(article["description"][:350])
-
-        if article.get("url"):
-            st.link_button(
-                "Open Article",
-                article["url"],
-                use_container_width=True,
-            )
-
-
-# =========================================================
-# 13. EVENT DETAIL DIALOG
-# =========================================================
-@st.dialog("Disaster Details", width="large")
-def show_disaster_dialog(event):
-    hazard = event.get("hazard", "ALL")
-    color = HAZARD_COLORS.get(hazard, "#cbd5e1")
+def render_news_card(article, index):
+    title = article.get("title") or "제목 미확인"
+    source = article.get("source") or "Google News"
 
     st.markdown(
         f"""
-        <div style="
-            color:{color};
-            font-size:12px;
-            font-weight:800;
-            letter-spacing:1.5px;
-        ">
-            {html.escape(get_hazard_label(hazard).upper())}
+        <div class="news-card">
+          <div class="event-title">{html.escape(title)}</div>
+          <div class="event-meta">
+            {html.escape(source)}<br>
+            {html.escape(fmt_time(article.get("published")))}
+          </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.subheader(
-        safe_text(event.get("title"), "Untitled event")
-    )
-
-    st.markdown("### Basic Information")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.write("**Location**")
-        st.write(safe_text(event.get("location")))
-
-        st.write("**Reported time (UTC)**")
-        st.write(format_utc(event.get("time")))
-
-    with col2:
-        st.write("**Data source**")
-        st.write(safe_text(event.get("source")))
-
-        st.write("**Alert level**")
-        st.write(safe_text(event.get("alert"), "Unknown"))
-
-    if hazard == "EARTHQUAKE":
-        st.markdown("### Earthquake Measurements")
-
-        m1, m2, m3 = st.columns(3)
-
-        magnitude = event.get("magnitude")
-        depth = event.get("depth_km")
-        felt = event.get("felt")
-
-        m1.metric(
-            "Magnitude",
-            str(magnitude) if magnitude is not None else "Unknown",
-        )
-        m2.metric(
-            "Depth",
-            f"{depth} km" if depth is not None else "Unknown",
-        )
-        m3.metric(
-            "Felt reports",
-            str(felt) if felt is not None else "Unknown",
-        )
-
-    st.markdown("### Damage and Impact")
-
-    st.info(
-        "Verified casualty and damage totals are not available "
-        "from this report. Check the original source for confirmed "
-        "figures."
-    )
-
-    st.write("**Confirmed casualties:** Unknown")
-    st.write("**Economic losses:** Unknown")
-    st.write("**Damage status:** Not confirmed by this dashboard")
-
-    if event.get("description"):
-        st.markdown("### Report Summary")
-        st.write(event["description"])
-
-    coordinates = get_coordinates(event)
-
-    if coordinates:
-        lat, lon = coordinates
-
-        st.markdown("### Location Map")
-        st.caption(f"Coordinates: {lat:.4f}, {lon:.4f}")
-
-        st.map(
-            pd.DataFrame({
-                "latitude": [lat],
-                "longitude": [lon],
-            }),
-            zoom=5,
-        )
-
-    st.markdown("### Original Source")
-
-    if event.get("source_url"):
+    if article.get("url"):
         st.link_button(
-            "Open Original Source",
-            event["source_url"],
+            "기사 열기",
+            article["url"],
+            key=f"news_open_{index}",
             use_container_width=True,
         )
-    else:
-        st.write("Original source link is unavailable.")
-
-    st.caption(
-        "All times are UTC. Information may change as agencies "
-        "publish updated reports."
-    )
 
 
 # =========================================================
-# 14. MAIN
+# 메인 UI
 # =========================================================
-if "hazard" not in st.session_state:
-    st.session_state["hazard"] = "ALL"
-
 render_utc_header()
 
 st.markdown(
-    """
-    <div class="main-title">WORLD DISASTER LIVE</div>
-    <div class="main-subtitle">
-        Global Natural Disaster Monitoring Dashboard
-    </div>
-    """,
+    '<div class="main-title">WORLD DISASTER LIVE</div>'
+    '<div class="subtitle">Global Disaster Monitoring Dashboard · UTC</div>',
     unsafe_allow_html=True,
 )
 
-render_hazard_menu()
-
-# Date range selector
-period_start, period_end = render_period_selector()
-
-selected_hazard = st.session_state["hazard"]
-
-st.divider()
-
-title_col, refresh_col = st.columns([4, 1])
-
-with title_col:
-    if selected_hazard == "ALL":
-        st.subheader("Disaster Reports for Selected Period")
-    else:
-        st.subheader(
-            f"{get_hazard_label(selected_hazard)} Reports"
-        )
-
-with refresh_col:
+top1, top2 = st.columns([4, 1])
+with top1:
+    st.markdown(
+        '<div class="section-title">Hazard Categories</div>',
+        unsafe_allow_html=True,
+    )
+with top2:
     if st.button("Refresh Data", use_container_width=True):
         load_earthquakes.clear()
         load_gdacs_events.clear()
         load_news.clear()
-        st.session_state.pop("selected_event", None)
         st.rerun()
 
+# 재난 종류 메뉴: 6개 + 5개
+if "hazard" not in st.session_state:
+    st.session_state.hazard = "All"
 
-# Convert selected dates to UTC API query parameters.
-period_start_iso = date_start_utc(period_start).strftime(
-    "%Y-%m-%dT%H:%M:%S"
-)
-period_end_iso = date_end_utc(period_end).strftime(
-    "%Y-%m-%dT%H:%M:%S"
+for row_hazards in (HAZARDS[:6], HAZARDS[6:]):
+    cols = st.columns(len(row_hazards))
+    for col, hazard_name in zip(cols, row_hazards):
+        with col:
+            selected = st.session_state.hazard == hazard_name
+            button_label = f"✓ {hazard_name}" if selected else hazard_name
+            if st.button(
+                button_label,
+                key=f"hazard_{hazard_name}",
+                use_container_width=True,
+            ):
+                st.session_state.hazard = hazard_name
+                st.rerun()
+
+start_dt, end_dt = render_period_selector()
+
+if start_dt is None or end_dt is None:
+    st.stop()
+
+st.markdown(
+    '<div class="section-title">Sorting Criteria</div>',
+    unsafe_allow_html=True,
 )
 
-with st.spinner("Loading reports for the selected period..."):
-    # USGS can query earthquakes over the chosen date range.
-    earthquake_events = load_earthquakes(
-        period_start_iso,
-        period_end_iso,
+sort_col1, sort_col2 = st.columns([2, 3])
+
+with sort_col1:
+    sort_criterion = st.selectbox(
+        "재난 카드 정렬 기준",
+        SORT_OPTIONS,
+        index=0,
+        help=(
+            "사상자·재산 피해·기간은 확인된 값이 있는 사건을 먼저 표시합니다. "
+            "지진 규모순은 지진을, 태풍 강도순은 태풍을 먼저 비교합니다."
+        ),
     )
 
-    # GDACS RSS contains a limited set of recent reports.
-    # Filter it locally by the report timestamp.
-    gdacs_events = load_gdacs_events()
+with sort_col2:
+    st.caption(
+        "사상자순 · 재산피해순 · 기간순은 확인된 수치만 비교합니다. "
+        "지진 규모순은 지진을, 태풍 강도순은 태풍을 우선 표시합니다. "
+        "미확인 값은 임의로 계산하지 않습니다."
+    )
 
-    gdacs_events = [
-        event for event in gdacs_events
-        if is_in_date_range(
-            event.get("time"),
-            period_start,
-            period_end,
+# 데이터 로드
+all_events = []
+news_items = []
+errors = []
+
+start_iso = start_dt.isoformat().replace("+00:00", "Z")
+end_iso = end_dt.isoformat().replace("+00:00", "Z")
+
+with st.spinner("재난 데이터를 불러오는 중입니다..."):
+    try:
+        all_events.extend(load_earthquakes(start_iso, end_iso))
+    except Exception as exc:
+        errors.append(f"USGS 지진 데이터: {exc}")
+
+    try:
+        gdacs_events = load_gdacs_events()
+        all_events.extend(
+            [
+                event for event in gdacs_events
+                if is_in_period(event.get("time"), start_dt, end_dt)
+            ]
         )
+    except Exception as exc:
+        errors.append(f"GDACS 재난 데이터: {exc}")
+
+    try:
+        news_items = load_news(
+            st.session_state.hazard,
+            st.session_state.period_start.isoformat(),
+            st.session_state.period_end.isoformat(),
+        )
+    except Exception as exc:
+        errors.append(f"Google News: {exc}")
+
+# 중복 지진 제거
+deduped = {}
+for event in all_events:
+    deduped[event["id"]] = event
+all_events = list(deduped.values())
+
+# 선택한 기간과 재난 종류로 필터링
+if st.session_state.hazard != "All":
+    filtered_events = [
+        event for event in all_events
+        if event.get("hazard") == st.session_state.hazard
     ]
+else:
+    filtered_events = all_events
 
-    combined_events = earthquake_events + gdacs_events
+filtered_news = news_items
 
-    # Remove duplicate event IDs.
-    deduplicated_events = {}
-
-    for event in combined_events:
-        event_key = event.get("id") or event.get("title", "")
-        deduplicated_events[event_key] = event
-
-    combined_events = list(deduplicated_events.values())
-
-    combined_events.sort(
-        key=lambda event: event.get("time") or "",
-        reverse=True,
-    )
-
-    visible_events = filter_events(
-        combined_events,
-        selected_hazard,
-    )
-
-    news_articles = load_news(
-        selected_hazard,
-        period_start.isoformat(),
-        period_end.isoformat(),
-    )
-
-    visible_articles = filter_articles(
-        news_articles,
-        selected_hazard,
-    )
-
-
-# Metrics
-event_count = len(visible_events)
-article_count = len(visible_articles)
-
-earthquake_count = sum(
-    1 for event in visible_events
-    if event.get("hazard") == "EARTHQUAKE"
+# 정렬 기준 적용
+filtered_events = sort_events(filtered_events, sort_criterion)
+filtered_news.sort(
+    key=lambda item: item.get("published") or datetime.min.replace(tzinfo=UTC),
+    reverse=True,
 )
 
-metric1, metric2, metric3 = st.columns(3)
+# 오류가 있으면 숨기지 않고 표시
+if errors:
+    with st.expander("일부 데이터 출처에 연결할 수 없습니다", expanded=False):
+        for error in errors:
+            st.warning(error)
+        st.caption(
+            "일시적인 네트워크 오류 또는 출처 서비스 제한일 수 있습니다. "
+            "새로고침을 눌러 다시 시도해 주세요."
+        )
 
-metric1.metric("Disaster Reports", event_count)
-metric2.metric("Related News Articles", article_count)
-metric3.metric("Earthquake Reports", earthquake_count)
-
-
-# Event cards
+# 상단 지표
 st.markdown(
-    '<div class="section-title">Disaster Events</div>',
+    '<div class="section-title">Overview</div>',
     unsafe_allow_html=True,
 )
 
-if not visible_events:
+total_events = len(filtered_events)
+earthquake_count = sum(x["hazard"] == "Earthquake" for x in filtered_events)
+typhoon_count = sum(x["hazard"] == "Typhoon" for x in filtered_events)
+news_count = len(filtered_news)
+
+metric_cols = st.columns(4)
+metrics = [
+    ("재난 이벤트", total_events),
+    ("지진", earthquake_count),
+    ("태풍", typhoon_count),
+    ("관련 뉴스", news_count),
+]
+
+for col, (label, value) in zip(metric_cols, metrics):
+    with col:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+              <div class="metric-label">{html.escape(label)}</div>
+              <div class="metric-value">{value:,}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+# 재난 카드
+st.markdown(
+    f'<div class="section-title">Disaster Events · {len(filtered_events)} events</div>',
+    unsafe_allow_html=True,
+)
+
+if sort_criterion == "지진 규모순":
+    st.caption("지진은 규모가 큰 순서로, 다른 재난은 최신순으로 표시합니다.")
+elif sort_criterion == "태풍 강도순":
+    st.caption(
+        "태풍은 공식 범주와 확인된 풍속을 기준으로 표시합니다. "
+        "그 외 재난은 최신순입니다."
+    )
+elif sort_criterion in ("사상자순", "재산피해순", "기간순"):
+    st.caption(
+        "확인된 수치가 있는 사건이 먼저 표시됩니다. "
+        "값이 없는 사건은 뒤쪽에 최신순으로 표시합니다."
+    )
+
+if not filtered_events:
     st.info(
-        "No matching events were found in the available data for "
-        "this period. Try another date range or refresh the data."
+        "선택한 기간과 재난 종류에 해당하는 이벤트를 찾지 못했습니다. "
+        "기간을 늘리거나 다른 재난 종류를 선택해 보세요."
     )
 else:
-    displayed_events = visible_events[:60]
+    for i in range(0, len(filtered_events), 2):
+        left, right = st.columns(2)
 
-    for start in range(0, len(displayed_events), 3):
-        event_group = displayed_events[start:start + 3]
-        columns = st.columns(3, gap="medium")
+        with left:
+            render_event_card(filtered_events[i], i)
 
-        for offset, (column, event) in enumerate(
-            zip(columns, event_group)
-        ):
-            with column:
-                event_card(event, start + offset)
+        if i + 1 < len(filtered_events):
+            with right:
+                render_event_card(filtered_events[i + 1], i + 1)
 
-
-# News cards
-st.divider()
-
+# 뉴스
 st.markdown(
-    '<div class="section-title">Related News</div>',
+    f'<div class="section-title">Related News · {len(filtered_news)} articles</div>',
     unsafe_allow_html=True,
 )
 
-if not visible_articles:
+if not filtered_news:
     st.info(
-        "No related news articles were found for this period. "
-        "The news provider may not have matching articles available."
+        "선택한 기간의 관련 뉴스가 없거나 뉴스 출처에 연결할 수 없습니다."
     )
 else:
-    displayed_articles = visible_articles[:20]
+    for i, article in enumerate(filtered_news[:30]):
+        render_news_card(article, i)
 
-    for start in range(0, len(displayed_articles), 2):
-        article_group = displayed_articles[start:start + 2]
-        columns = st.columns(2, gap="medium")
-
-        for column, article in zip(columns, article_group):
-            with column:
-                article_card(article, start)
-
-
-# Event detail dialog
-selected_event = st.session_state.get("selected_event")
-
-if selected_event:
-    show_disaster_dialog(selected_event)
-
-
-# Footer
-st.divider()
-
+# 출처 및 데이터 설명
+st.markdown("---")
+st.markdown("#### Data Sources")
 st.markdown(
-    """
-    <div class="footer-note">
-        <b>Data Sources:</b> USGS Earthquake Hazards Program,
-        GDACS, Google News RSS.<br>
-        This dashboard aggregates public reports and news.
-        News reports are not necessarily official confirmations.
-        Missing damage figures are shown as unknown rather than estimated.<br>
-        All timestamps use Coordinated Universal Time (UTC).<br><br>
-        <span style="color:#64748b;">WORLD DISASTER LIVE</span>
-    </div>
-    """,
-    unsafe_allow_html=True,
+    "- [USGS Earthquake Catalog](https://earthquake.usgs.gov/earthquakes/search/)\n"
+    "- [GDACS Global Disaster Alert and Coordination System](https://www.gdacs.org/)\n"
+    "- [Google News](https://news.google.com/)"
+)
+st.caption(
+    "피해·사상자·기간·태풍 강도 정보는 출처에 따라 제공 여부와 갱신 시점이 다릅니다. "
+    "미확인 값은 0으로 간주하지 않으며, 확인되지 않은 수치나 피해 규모를 만들어 내지 않습니다. "
+    "지진은 USGS 규모를 사용하고, 태풍은 공개된 공식 범주 또는 단위가 명시된 풍속을 사용합니다. "
+    "뉴스는 관련 보도를 찾기 위한 참고 자료이며 공식 피해 집계와 다를 수 있습니다."
 )

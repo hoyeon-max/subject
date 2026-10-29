@@ -1,15 +1,18 @@
 
-import streamlit as st
-import requests
-import xml.etree.ElementTree as ET
-import pandas as pd
 import html
 import re
-from datetime import datetime, date, timedelta, timezone
-from urllib.parse import quote
+from datetime import date, datetime, time, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from urllib.parse import urlencode
+import xml.etree.ElementTree as ET
+
+import pandas as pd
+import requests
+import streamlit as st
+
 
 # =========================================================
-# WORLD DISASTER LIVE
+# 1. APP CONFIG
 # =========================================================
 
 st.set_page_config(
@@ -20,17 +23,28 @@ st.set_page_config(
 )
 
 UTC = timezone.utc
-NOW = datetime.now(UTC)
-TODAY_UTC = NOW.date()
+CURRENT_UTC = datetime.now(UTC)
+TODAY_UTC = CURRENT_UTC.date()
+
+USGS_API = "https://earthquake.usgs.gov/fdsnws/event/1/query"
+GDACS_RSS = "https://www.gdacs.org/xml/rss.xml"
 
 HAZARDS = [
-    "All", "Typhoon", "Earthquake", "Wildfire", "Flood",
-    "Heavy Rain", "Drought", "Heavy Snow", "Heatwave",
-    "Cold Wave", "Landslide",
+    "All",
+    "Typhoon",
+    "Earthquake",
+    "Wildfire",
+    "Flood",
+    "Heavy Rain",
+    "Drought",
+    "Heavy Snow",
+    "Heatwave",
+    "Cold Wave",
+    "Landslide",
 ]
 
 HAZARD_LABELS = {
-    "All": "🌐 All Disasters",
+    "All": "🌐 All",
     "Typhoon": "🌀 Typhoon",
     "Earthquake": "🌎 Earthquake",
     "Wildfire": "🔥 Wildfire",
@@ -43,176 +57,200 @@ HAZARD_LABELS = {
     "Landslide": "⛰️ Landslide",
 }
 
-# 공식 기관의 정보 확인 페이지
 OFFICIAL_SOURCES = {
     "Global": {
         "GDACS": "https://www.gdacs.org/",
         "UNDRR": "https://www.undrr.org/",
         "ReliefWeb": "https://reliefweb.int/",
+        "WMO": "https://wmo.int/",
     },
     "Earthquake": {
         "USGS Earthquake Map": "https://earthquake.usgs.gov/earthquakes/map/",
-        "USGS Earthquake Data": "https://earthquake.usgs.gov/fdsnws/event/1/",
+        "USGS Earthquake API": "https://earthquake.usgs.gov/fdsnws/event/1/",
+        "USGS Landslide Hazards": "https://www.usgs.gov/programs/landslide-hazards",
     },
     "Typhoon": {
-        "NOAA / NHC": "https://www.nhc.noaa.gov/",
+        "NOAA National Hurricane Center": "https://www.nhc.noaa.gov/",
         "JTWC": "https://www.metoc.navy.mil/jtwc/jtwc.html",
         "GDACS": "https://www.gdacs.org/",
     },
     "Wildfire": {
         "NASA FIRMS": "https://firms.modaps.eosdis.nasa.gov/",
-        "Copernicus EMS": "https://emergency.copernicus.eu/",
+        "Copernicus Emergency Management": "https://emergency.copernicus.eu/",
     },
-    "Flood": {
-        "Copernicus EMS": "https://emergency.copernicus.eu/",
+    "Flood & Rain": {
+        "Copernicus Emergency Management": "https://emergency.copernicus.eu/",
         "GDACS": "https://www.gdacs.org/",
-    },
-    "Heavy Rain": {
         "WMO": "https://wmo.int/",
-        "GDACS": "https://www.gdacs.org/",
     },
-    "Drought": {
-        "WMO": "https://wmo.int/",
+    "Other Hazards": {
         "UNDRR": "https://www.undrr.org/",
-    },
-    "Heavy Snow": {
-        "WMO": "https://wmo.int/",
-        "GDACS": "https://www.gdacs.org/",
-    },
-    "Heatwave": {
-        "WMO": "https://wmo.int/",
-        "WHO": "https://www.who.int/health-topics/heatwaves",
-    },
-    "Cold Wave": {
         "WMO": "https://wmo.int/",
         "WHO": "https://www.who.int/",
-    },
-    "Landslide": {
-        "USGS Landslides": "https://www.usgs.gov/programs/landslide-hazards",
         "GDACS": "https://www.gdacs.org/",
     },
     "South Korea": {
         "Ministry of the Interior and Safety": "https://www.mois.go.kr/",
         "Korea Meteorological Administration": "https://www.kma.go.kr/",
-        "Public Data Portal": "https://www.data.go.kr/",
+        "Korea Public Data Portal": "https://www.data.go.kr/",
     },
 }
 
-GDACS_RSS = "https://www.gdacs.org/xml/rss.xml"
-USGS_API = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 
 # =========================================================
-# STYLE
+# 2. STYLE
 # =========================================================
 
-st.markdown("""
-<style>
-.stApp {
-    background: #0f172a;
-    color: #e5e7eb;
-}
-header[data-testid="stHeader"] {
-    background: #0f172a;
-}
-.block-container {
-    max-width: 1500px;
-    padding-top: 1.3rem;
-    padding-bottom: 3rem;
-}
-h1, h2, h3, h4, p, label, span {
-    color: #e5e7eb;
-}
-[data-testid="stMetric"] {
-    background: #172238;
-    border: 1px solid #2a3a55;
-    border-radius: 12px;
-    padding: 16px;
-}
-.disaster-card {
-    background: #172238;
-    border: 1px solid #2a3a55;
-    border-radius: 14px;
-    padding: 18px;
-    margin-bottom: 10px;
-    min-height: 200px;
-}
-.disaster-title {
-    font-size: 19px;
-    font-weight: 700;
-    line-height: 1.45;
-    margin-bottom: 10px;
-}
-.disaster-meta {
-    font-size: 13px;
-    color: #aab9ce;
-    margin: 5px 0;
-}
-.tag {
-    display: inline-block;
-    background: #263750;
-    border-radius: 6px;
-    padding: 4px 8px;
-    font-size: 12px;
-    margin-bottom: 10px;
-}
-.source-box {
-    background: #172238;
-    border: 1px solid #2a3a55;
-    border-radius: 12px;
-    padding: 16px;
-    margin-bottom: 10px;
-}
-div.stButton > button {
-    border-radius: 8px;
-    min-height: 40px;
-    border: 1px solid #334766;
-}
-a {
-    color: #7dd3fc !important;
-}
-hr {
-    border-color: #2a3a55;
-}
-.small-muted {
-    color: #94a3b8;
-    font-size: 12px;
-}
-</style>
-""", unsafe_allow_html=True)
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background-color: #0f172a;
+        color: #e5e7eb;
+    }
+
+    header[data-testid="stHeader"] {
+        background-color: #0f172a;
+    }
+
+    .block-container {
+        max-width: 1500px;
+        padding-top: 1.4rem;
+        padding-bottom: 3rem;
+    }
+
+    h1, h2, h3, h4, p, label {
+        color: #e5e7eb;
+    }
+
+    [data-testid="stMetric"] {
+        background: #172238;
+        border: 1px solid #2a3a55;
+        border-radius: 12px;
+        padding: 16px;
+    }
+
+    .disaster-card {
+        background: #172238;
+        border: 1px solid #2a3a55;
+        border-radius: 14px;
+        padding: 18px;
+        min-height: 190px;
+        margin-bottom: 8px;
+        overflow-wrap: anywhere;
+    }
+
+    .disaster-title {
+        font-size: 18px;
+        font-weight: 700;
+        line-height: 1.5;
+        margin: 8px 0 12px 0;
+        color: #f1f5f9;
+    }
+
+    .disaster-meta {
+        font-size: 13px;
+        color: #b4c2d5;
+        margin: 6px 0;
+    }
+
+    .hazard-tag {
+        display: inline-block;
+        background: #263750;
+        color: #bae6fd;
+        border-radius: 6px;
+        padding: 4px 8px;
+        font-size: 12px;
+    }
+
+    .source-card {
+        background: #172238;
+        border: 1px solid #2a3a55;
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 12px;
+        overflow-wrap: anywhere;
+    }
+
+    .source-muted {
+        color: #94a3b8;
+        font-size: 12px;
+    }
+
+    div.stButton > button {
+        border-radius: 8px;
+        min-height: 40px;
+        border: 1px solid #334766;
+    }
+
+    div[data-testid="stDialog"] {
+        background-color: #0f172a;
+    }
+
+    a {
+        color: #7dd3fc !important;
+    }
+
+    hr {
+        border-color: #2a3a55;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 # =========================================================
-# UTILITIES
+# 3. COMMON HELPERS
 # =========================================================
 
-def parse_datetime(value):
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
-    except (ValueError, TypeError):
-        return None
+def safe_text(value, default="Not available"):
+    """Convert a value into safe display text."""
+    if value is None:
+        return default
+
+    text = str(value).strip()
+
+    if not text:
+        return default
+
+    return text
+
+
+def safe_url(value, fallback):
+    """Only allow HTTP and HTTPS links."""
+    value = str(value or "").strip()
+
+    if value.startswith("https://") or value.startswith("http://"):
+        return value
+
+    return fallback
 
 
 def classify_hazard(text):
     text = (text or "").lower()
 
+    # More specific patterns are checked first.
     patterns = [
         ("Earthquake", ["earthquake", "seismic"]),
-        ("Typhoon", [
-            "tropical cyclone", "typhoon", "hurricane",
-            "cyclone", "tropical storm"
-        ]),
+        (
+            "Typhoon",
+            [
+                "tropical cyclone",
+                "typhoon",
+                "hurricane",
+                "cyclone",
+                "tropical storm",
+            ],
+        ),
         ("Wildfire", ["wildfire", "wild fire", "forest fire"]),
-        ("Flood", ["flood", "flash flood"]),
-        ("Heavy Rain", ["heavy rain", "extreme rainfall", "rainfall"]),
+        ("Landslide", ["landslide", "mudslide"]),
         ("Drought", ["drought"]),
-        ("Heavy Snow", ["heavy snow", "snowstorm", "blizzard"]),
         ("Heatwave", ["heatwave", "heat wave", "extreme heat"]),
         ("Cold Wave", ["cold wave", "cold spell", "extreme cold"]),
-        ("Landslide", ["landslide", "mudslide"]),
+        ("Heavy Snow", ["heavy snow", "snowstorm", "blizzard"]),
+        ("Flood", ["flood", "flash flood"]),
+        ("Heavy Rain", ["heavy rain", "extreme rainfall", "rainfall"]),
     ]
 
     for hazard, keywords in patterns:
@@ -222,41 +260,86 @@ def classify_hazard(text):
     return "Other"
 
 
-def event_id(source, external_id):
+def make_event_id(source, external_id):
     return f"{source}:{external_id}"
 
 
-def official_sources_for(hazard):
-    names = ["GDACS", "UNDRR", "ReliefWeb"]
+def parse_rss_date(value):
+    if not value:
+        return None
 
-    if hazard in OFFICIAL_SOURCES:
-        names = list(OFFICIAL_SOURCES[hazard].keys()) + names
+    try:
+        parsed = parsedate_to_datetime(value.strip())
 
-    result = {}
-    for name in names:
-        url = None
-        for group in OFFICIAL_SOURCES.values():
-            if name in group:
-                url = group[name]
-                break
-        if url:
-            result[name] = url
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
 
-    # Preserve order and remove duplicate names
-    return result
+        return parsed.astimezone(UTC)
+
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def parse_iso_datetime(value):
+    if not value:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(
+            str(value).replace("Z", "+00:00")
+        )
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+
+        return parsed.astimezone(UTC)
+
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def is_in_date_range(event_datetime, start_date, end_date):
+    if event_datetime is None:
+        return False
+
+    return start_date <= event_datetime.date() <= end_date
+
+
+def get_official_sources(hazard):
+    """Select relevant official source links."""
+    source_groups = {
+        "Earthquake": ["Earthquake", "Global"],
+        "Typhoon": ["Typhoon", "Global"],
+        "Wildfire": ["Wildfire", "Global"],
+        "Flood": ["Flood & Rain", "Global"],
+        "Heavy Rain": ["Flood & Rain", "Global"],
+        "Drought": ["Other Hazards", "Global"],
+        "Heavy Snow": ["Other Hazards", "Global"],
+        "Heatwave": ["Other Hazards", "Global"],
+        "Cold Wave": ["Other Hazards", "Global"],
+        "Landslide": ["Earthquake", "Global"],
+        "Other": ["Global"],
+    }
+
+    groups = source_groups.get(hazard, ["Global"])
+    results = {}
+
+    for group in groups:
+        results.update(OFFICIAL_SOURCES.get(group, {}))
+
+    return results
 
 
 # =========================================================
-# DATA SOURCES
+# 4. USGS EARTHQUAKE API
 # =========================================================
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_usgs(start_date, end_date):
-    """USGS earthquake observations. No API key required."""
+def fetch_usgs(start_iso, end_iso):
     params = {
         "format": "geojson",
-        "starttime": start_date.isoformat(),
-        "endtime": (end_date + timedelta(days=1)).isoformat(),
+        "starttime": start_iso,
+        "endtime": end_iso,
         "orderby": "time",
         "limit": 500,
     }
@@ -268,57 +351,85 @@ def fetch_usgs(start_date, end_date):
         headers={"User-Agent": "WorldDisasterLive/1.0"},
     )
     response.raise_for_status()
+
     payload = response.json()
+    features = payload.get("features", [])
 
     events = []
 
-    for item in payload.get("features", []):
-        properties = item.get("properties", {}) or {}
-        geometry = item.get("geometry", {}) or {}
-        coords = geometry.get("coordinates", [])
+    for item in features:
+        properties = item.get("properties") or {}
+        geometry = item.get("geometry") or {}
+        coordinates = geometry.get("coordinates") or []
 
         timestamp = properties.get("time")
+
         if timestamp is None:
             continue
 
-        occurred = datetime.fromtimestamp(timestamp / 1000, tz=UTC)
-        if not (start_date <= occurred.date() <= end_date):
+        try:
+            occurred = datetime.fromtimestamp(
+                float(timestamp) / 1000,
+                tz=UTC,
+            )
+        except (ValueError, TypeError, OverflowError, OSError):
             continue
 
         magnitude = properties.get("mag")
-        place = properties.get("place") or "Location not specified"
-        external_id = item.get("id", str(timestamp))
+        place = safe_text(properties.get("place"), "Location not specified")
+        external_id = safe_text(item.get("id"), str(timestamp))
+
+        latitude = None
+        longitude = None
+
+        if len(coordinates) >= 2:
+            try:
+                longitude = float(coordinates[0])
+                latitude = float(coordinates[1])
+            except (ValueError, TypeError):
+                latitude = None
+                longitude = None
+
+        event_url = safe_url(
+            properties.get("url"),
+            "https://earthquake.usgs.gov/earthquakes/map/",
+        )
 
         events.append({
-            "id": event_id("USGS", external_id),
-            "title": f"Earthquake — {place}",
+            "id": make_event_id("USGS", external_id),
+            "title": f"Earthquake - {place}",
             "hazard": "Earthquake",
             "location": place,
             "occurred": occurred,
             "source": "USGS",
-            "source_url": properties.get("url")
-                or "https://earthquake.usgs.gov/earthquakes/map/",
-            "official_url": "https://earthquake.usgs.gov/earthquakes/map/",
-            "description": properties.get("title") or "USGS earthquake observation.",
+            "source_url": event_url,
             "magnitude": magnitude,
-            "latitude": coords[1] if len(coords) >= 2 else None,
-            "longitude": coords[0] if len(coords) >= 2 else None,
-            "status": "Observation",
-            "deaths": None,
-            "missing": None,
-            "damage": None,
+            "latitude": latitude,
+            "longitude": longitude,
+            "description": safe_text(
+                properties.get("title"),
+                "USGS earthquake observation.",
+            ),
+            "status": "Official observation",
             "data_note": (
-                "USGS earthquake observations do not provide a complete "
-                "global count of deaths, missing persons, or property damage."
+                "USGS provides earthquake observations. This record alone "
+                "does not establish deaths, missing persons, or total "
+                "property damage."
             ),
         })
 
     return events
 
 
+# =========================================================
+# 5. GDACS PUBLIC RSS
+# =========================================================
+
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_gdacs(start_date, end_date):
-    """GDACS public RSS feed. Data availability depends on the feed."""
+def fetch_gdacs(start_iso, end_iso):
+    start_date = date.fromisoformat(start_iso)
+    end_date = date.fromisoformat(end_iso)
+
     response = requests.get(
         GDACS_RSS,
         timeout=25,
@@ -331,363 +442,406 @@ def fetch_gdacs(start_date, end_date):
 
     for item in root.findall(".//item"):
         title = item.findtext("title", default="Disaster alert")
-        link = item.findtext("link", default="https://www.gdacs.org/")
+        link = item.findtext("link", default="")
         description = item.findtext("description", default="")
         pub_date = item.findtext("pubDate", default="")
-        guid = item.findtext("guid", default=link)
+        guid = item.findtext("guid", default=link or title)
 
-        occurred = None
-        if pub_date:
-            try:
-                occurred = datetime.strptime(
-                    pub_date.strip(), "%a, %d %b %Y %H:%M:%S %Z"
-                ).replace(tzinfo=UTC)
-            except ValueError:
-                try:
-                    occurred = datetime.strptime(
-                        pub_date.strip(), "%a, %d %b %Y %H:%M:%S %z"
-                    ).astimezone(UTC)
-                except ValueError:
-                    occurred = None
+        occurred = parse_rss_date(pub_date)
 
-        # If publication date cannot be parsed, do not pretend it matches
-        # the requested time window.
-        if occurred is None:
+        # Do not invent a date if the feed has no usable timestamp.
+        if not is_in_date_range(occurred, start_date, end_date):
             continue
 
-        if not (start_date <= occurred.date() <= end_date):
-            continue
+        combined = f"{title} {description}"
+        hazard = classify_hazard(combined)
 
-        combined_text = f"{title} {description}"
-        hazard = classify_hazard(combined_text)
         if hazard == "Other":
             continue
 
-        clean_description = re.sub(
-            r"<[^>]+>", " ", description
-        )
+        clean_description = re.sub(r"<[^>]*>", " ", description)
         clean_description = html.unescape(clean_description)
         clean_description = re.sub(r"\s+", " ", clean_description).strip()
 
         events.append({
-            "id": event_id("GDACS", guid),
-            "title": html.unescape(title),
+            "id": make_event_id("GDACS", safe_text(guid, title)),
+            "title": html.unescape(safe_text(title, "Disaster alert")),
             "hazard": hazard,
-            "location": "See official GDACS alert",
+            "location": "See original GDACS alert",
             "occurred": occurred,
             "source": "GDACS",
-            "source_url": link if link.startswith("https://") else "https://www.gdacs.org/",
-            "official_url": "https://www.gdacs.org/",
-            "description": clean_description or "See the original GDACS alert.",
+            "source_url": safe_url(link, "https://www.gdacs.org/"),
             "magnitude": None,
             "latitude": None,
             "longitude": None,
-            "status": "Alert",
-            "deaths": None,
-            "missing": None,
-            "damage": None,
+            "description": clean_description or "See the original alert.",
+            "status": "Official alert feed",
             "data_note": (
-                "The RSS alert is not a standardized official casualty or "
-                "property-damage record. Check the original alert and "
-                "the affected country's official reports."
+                "GDACS alert records are not a complete standardized "
+                "register of casualties or property damage. Consult the "
+                "affected country's official disaster authority."
             ),
         })
 
     return events
 
 
+# =========================================================
+# 6. LOAD DATA WITH ERROR HANDLING
+# =========================================================
+
 def load_events(start_date, end_date):
+    start_iso = datetime.combine(
+        start_date,
+        time.min,
+        tzinfo=UTC,
+    ).isoformat()
+
+    # Use the start of the day after end_date as the exclusive endpoint.
+    end_exclusive = datetime.combine(
+        end_date + timedelta(days=1),
+        time.min,
+        tzinfo=UTC,
+    ).isoformat()
+
     events = []
     errors = []
 
     try:
-        events.extend(fetch_usgs(start_date, end_date))
+        events.extend(fetch_usgs(start_iso, end_exclusive))
     except Exception as exc:
-        errors.append(f"USGS: {exc}")
+        errors.append(f"USGS: {type(exc).__name__}: {exc}")
 
     try:
-        events.extend(fetch_gdacs(start_date, end_date))
+        events.extend(
+            fetch_gdacs(start_date.isoformat(), end_date.isoformat())
+        )
     except Exception as exc:
-        errors.append(f"GDACS: {exc}")
+        errors.append(f"GDACS: {type(exc).__name__}: {exc}")
 
-    # Avoid duplicate records from the same source.
-    unique = {}
+    # Remove duplicate IDs.
+    unique_events = {}
+
     for event in events:
-        unique[event["id"]] = event
+        unique_events[event["id"]] = event
 
-    return list(unique.values()), errors
+    result = list(unique_events.values())
+
+    result.sort(
+        key=lambda event: event["occurred"] or datetime.min.replace(tzinfo=UTC),
+        reverse=True,
+    )
+
+    return result, errors
 
 
 # =========================================================
-# HEADER AND UTC CLOCK
+# 7. UTC CLOCK AND HEADER
 # =========================================================
 
-left, center, right = st.columns([2, 3, 2])
+header_left, header_center, header_right = st.columns([2, 4, 2])
 
-with left:
+with header_left:
+    st.caption("GLOBAL HAZARD MONITOR")
+
+with header_center:
     st.markdown(
-        "<div style='font-size:12px;color:#94a3b8;letter-spacing:2px'>"
-        "GLOBAL HAZARD MONITOR</div>",
+        """
+        <div style="text-align:center;font-size:29px;font-weight:800;
+                    letter-spacing:1.5px;">
+            WORLD DISASTER LIVE
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
-with center:
-    st.markdown(
-        "<div style='text-align:center;font-size:30px;font-weight:800;"
-        "letter-spacing:2px'>🌍 WORLD DISASTER LIVE</div>",
-        unsafe_allow_html=True,
-    )
-
-with right:
+with header_right:
     st.markdown(
         f"<div style='text-align:right;color:#94a3b8;font-size:12px'>"
-        f"UTC DATE · {NOW.strftime('%Y-%m-%d')}</div>",
+        f"UTC DATE: {CURRENT_UTC.strftime('%Y-%m-%d')}</div>",
         unsafe_allow_html=True,
     )
 
-st.components.v1.html("""
-<div style="text-align:center;font-family:Arial,sans-serif;padding:2px">
-  <div id="utc-clock" style="font-size:30px;font-weight:700;color:#7dd3fc">
-    --:--:--
-  </div>
-  <div style="font-size:11px;letter-spacing:2px;color:#94a3b8">
-    COORDINATED UNIVERSAL TIME (UTC)
-  </div>
-</div>
-<script>
-function updateUTC() {
-  const now = new Date();
-  document.getElementById("utc-clock").textContent =
-    now.toISOString().slice(11, 19);
-}
-updateUTC();
-setInterval(updateUTC, 1000);
-</script>
-""", height=76)
+st.components.v1.html(
+    """
+    <div style="text-align:center;font-family:Arial,sans-serif;padding:4px">
+        <div id="utc-clock"
+             style="font-size:30px;font-weight:700;color:#7dd3fc">
+            --:--:--
+        </div>
+        <div style="font-size:11px;letter-spacing:2px;color:#94a3b8">
+            COORDINATED UNIVERSAL TIME (UTC)
+        </div>
+    </div>
+    <script>
+    function updateUTC() {
+        const clock = document.getElementById("utc-clock");
+        if (!clock) return;
+        clock.textContent = new Date().toISOString().slice(11, 19);
+    }
+    updateUTC();
+    setInterval(updateUTC, 1000);
+    </script>
+    """,
+    height=78,
+)
 
 st.divider()
 
+
 # =========================================================
-# FILTERS
+# 8. DATE FILTERS
 # =========================================================
 
 st.subheader("Hazard Monitor")
 
-selected_hazard = st.radio(
-    "Filter by hazard",
-    HAZARDS,
-    horizontal=True,
-    format_func=lambda x: HA​ZARD_LABELS[x] if False else HAZARD_LABELS[x],
-    label_visibility="collapsed",
-)
+# Initialize widget state before creating date_input widgets.
+if "start_date" not in st.session_state:
+    st.session_state.start_date = TODAY_UTC - timedelta(days=6)
 
-filter_col1, filter_col2, filter_col3 = st.columns([2, 2, 1])
+if "end_date" not in st.session_state:
+    st.session_state.end_date = TODAY_UTC
 
-default_start = TODAY_UTC - timedelta(days=6)
+# Keep dates within allowed bounds after the app stays open across days.
+if st.session_state.start_date > TODAY_UTC:
+    st.session_state.start_date = TODAY_UTC
 
-with filter_col1:
-    start_date = st.date_input(
-        "Start date (UTC)",
-        value=default_start,
-        max_value=TODAY_UTC,
-        key="start_date",
-    )
+if st.session_state.end_date > TODAY_UTC:
+    st.session_state.end_date = TODAY_UTC
 
-with filter_col2:
-    end_date = st.date_input(
-        "End date (UTC)",
-        value=TODAY_UTC,
-        min_value=start_date,
-        max_value=TODAY_UTC,
-        key="end_date",
-    )
+preset1, preset2, preset3 = st.columns([1, 1, 5])
 
-with filter_col3:
-    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+with preset1:
     if st.button("Last 7 days", use_container_width=True):
         st.session_state.start_date = TODAY_UTC - timedelta(days=6)
         st.session_state.end_date = TODAY_UTC
         st.rerun()
 
+with preset2:
+    if st.button("Today", use_container_width=True):
+        st.session_state.start_date = TODAY_UTC
+        st.session_state.end_date = TODAY_UTC
+        st.rerun()
+
+date_col1, date_col2 = st.columns(2)
+
+with date_col1:
+    start_date = st.date_input(
+        "Start date (UTC)",
+        key="start_date",
+        max_value=TODAY_UTC,
+    )
+
+with date_col2:
+    end_date = st.date_input(
+        "End date (UTC)",
+        key="end_date",
+        max_value=TODAY_UTC,
+    )
+
 if start_date > end_date:
     st.error("Start date must be on or before end date.")
     st.stop()
 
-action_col1, action_col2 = st.columns([1, 5])
-with action_col1:
-    if st.button("🔄 Refresh data", use_container_width=True):
+selected_hazard = st.radio(
+    "Filter by hazard",
+    HAZARDS,
+    horizontal=True,
+    format_func=lambda value: HAZARD_LABELS[value],
+    label_visibility="collapsed",
+)
+
+refresh_col, note_col = st.columns([1, 5])
+
+with refresh_col:
+    if st.button("Refresh data", use_container_width=True):
         fetch_usgs.clear()
         fetch_gdacs.clear()
         st.rerun()
 
-with action_col2:
+with note_col:
     st.caption(
-        "Sources: USGS earthquake observations and GDACS public disaster alerts. "
-        "Times are shown in UTC."
+        "Sources: USGS earthquake observations and GDACS public alerts. "
+        "Data may be incomplete or delayed."
     )
 
+
 # =========================================================
-# LOAD AND FILTER
+# 9. FETCH AND FILTER
 # =========================================================
 
-with st.spinner("Loading public disaster data..."):
-    all_events, fetch_errors = load_events(start_date, end_date)
+with st.spinner("Loading official public data..."):
+    all_events, errors = load_events(start_date, end_date)
 
-if selected_hazard != "All":
-    events = [e for e in all_events if e["hazard"] == selected_hazard]
-else:
+if selected_hazard == "All":
     events = all_events
+else:
+    events = [
+        event for event in all_events
+        if event["hazard"] == selected_hazard
+    ]
 
-events.sort(
-    key=lambda e: e["occurred"] or datetime.min.replace(tzinfo=UTC),
-    reverse=True,
+earthquake_count = sum(
+    1 for event in events if event["hazard"] == "Earthquake"
 )
 
-# =========================================================
-# SUMMARY METRICS
-# =========================================================
-
-m1, m2, m3 = st.columns(3)
-
-m1.metric("Events in selected period", len(events))
-m2.metric(
-    "Earthquake observations",
-    sum(1 for e in events if e["hazard"] == "Earthquake"),
-)
-m3.metric(
-    "GDACS alerts",
-    sum(1 for e in events if e["source"] == "GDACS"),
+gdacs_count = sum(
+    1 for event in events if event["source"] == "GDACS"
 )
 
-if fetch_errors:
-    with st.expander("Data source connection notices"):
+metric1, metric2, metric3 = st.columns(3)
+
+metric1.metric("Events returned", len(events))
+metric2.metric("Earthquake observations", earthquake_count)
+metric3.metric("GDACS alerts", gdacs_count)
+
+if errors:
+    with st.expander("Data source connection issues"):
         st.warning(
-            "One or more sources could not be reached. The results may be incomplete."
+            "Some data sources could not be reached. "
+            "The displayed event list may be incomplete."
         )
-        for err in fetch_errors:
-            st.code(err)
 
-st.divider()
+        for error in errors:
+            st.code(error)
+
 
 # =========================================================
-# DETAILS DIALOG
+# 10. DETAILS DIALOG
 # =========================================================
 
 @st.dialog("Disaster details", width="large")
 def show_details(event):
     st.markdown(f"### {event['title']}")
-    st.caption(
-        f"{event['hazard']} · {event['source']} · "
-        f"{event['occurred'].strftime('%Y-%m-%d %H:%M:%S UTC')}"
+
+    occurred = event.get("occurred")
+    occurred_text = (
+        occurred.strftime("%Y-%m-%d %H:%M:%S UTC")
+        if occurred
+        else "Time unavailable"
     )
 
-    st.markdown("#### Available information")
+    st.caption(
+        f"{event['hazard']} | {event['source']} | {occurred_text}"
+    )
+
+    st.markdown("#### Event information")
     st.write(f"**Location:** {event['location']}")
     st.write(f"**Record type:** {event['status']}")
 
-    if event["hazard"] == "Earthquake" and event.get("magnitude") is not None:
-        st.write(f"**Magnitude:** {event['magnitude']}")
+    magnitude = event.get("magnitude")
+
+    if event["hazard"] == "Earthquake" and magnitude is not None:
+        st.write(f"**Magnitude:** {magnitude}")
+
+    latitude = event.get("latitude")
+    longitude = event.get("longitude")
+
+    if latitude is not None and longitude is not None:
+        st.markdown("#### Coordinates")
+        st.code(f"Latitude: {latitude}\nLongitude: {longitude}")
+
+        map_url = (
+            "https://www.google.com/maps?"
+            + urlencode({"q": f"{latitude},{longitude}"})
+        )
+
+        st.link_button(
+            "Open map",
+            map_url,
+            use_container_width=True,
+        )
 
     st.markdown("#### Casualties and property damage")
+
     st.info(
-        "This dashboard does not infer or calculate casualty figures or "
-        "property damage from headlines. Consult the affected country's "
-        "official disaster-management agency for confirmed figures."
+        "This dashboard does not estimate casualty figures or property "
+        "damage from headlines. Check the official reports from the "
+        "affected country's government or disaster-management agency."
     )
 
-    st.write("**Deaths:** Unverified here")
-    st.write("**Missing persons:** Unverified here")
-    st.write("**Property damage:** Unverified here")
+    st.write("**Deaths:** Not verified by this dashboard")
+    st.write("**Missing persons:** Not verified by this dashboard")
+    st.write("**Property damage:** Not verified by this dashboard")
 
     st.caption(event["data_note"])
 
-    if event.get("description"):
-        st.markdown("#### Source description")
-        st.write(event["description"])
+    st.markdown("#### Original record")
 
-    if event.get("latitude") is not None and event.get("longitude") is not None:
-        st.markdown("#### Coordinates")
-        st.code(
-            f"Latitude: {event['latitude']}\n"
-            f"Longitude: {event['longitude']}"
-        )
-        map_url = (
-            "https://www.google.com/maps?q="
-            f"{event['latitude']},{event['longitude']}"
-        )
-        st.link_button("Open location map", map_url, use_container_width=True)
-
-    st.markdown("#### Official sources")
     st.link_button(
-        f"Open original {event['source']} record",
+        f"Open {event['source']} record",
         event["source_url"],
         use_container_width=True,
     )
 
-    source_group = (
-        "Earthquake" if event["hazard"] == "Earthquake"
-        else event["hazard"]
-    )
-    source_links = official_sources_for(source_group)
+    st.markdown("#### Related official sources")
 
-    for name, url in list(source_links.items())[:8]:
+    source_links = get_official_sources(event["hazard"])
+
+    for name, url in source_links.items():
         st.markdown(f"- [{name}]({url})")
 
     st.caption(
-        "Official websites may publish revised figures after the initial alert. "
-        "Always check the report's publication time and update time."
+        "Official reports may be updated after the initial alert. "
+        "Check the report date and the latest revision."
     )
 
 
 # =========================================================
-# EVENT CARDS
+# 11. EVENT CARDS
 # =========================================================
 
+st.divider()
 st.subheader("Disaster Events")
 
 if not events:
     st.info(
-        "No matching events were returned for the selected dates and hazard. "
-        "This does not prove that no disaster occurred."
+        "No matching events were returned for the selected period. "
+        "This does not necessarily mean that no disaster occurred."
     )
-else:
-    for start in range(0, len(events), 2):
-        cols = st.columns(2)
 
-        for offset, col in enumerate(cols):
-            index = start + offset
+else:
+    for row_start in range(0, len(events), 2):
+        card_columns = st.columns(2)
+
+        for offset, column in enumerate(card_columns):
+            index = row_start + offset
+
             if index >= len(events):
                 continue
 
             event = events[index]
-            with col:
-                occurred_text = event["occurred"].strftime(
-                    "%Y-%m-%d %H:%M UTC"
+
+            with column:
+                occurred = event.get("occurred")
+                occurred_text = (
+                    occurred.strftime("%Y-%m-%d %H:%M UTC")
+                    if occurred
+                    else "Time unavailable"
                 )
+
+                hazard_text = html.escape(event["hazard"])
+                title_text = html.escape(event["title"])
+                source_text = html.escape(event["source"])
+                location_text = html.escape(event["location"])
+                time_text = html.escape(occurred_text)
 
                 st.markdown(
                     f"""
                     <div class="disaster-card">
-                        <div class="tag">{html.escape(event['hazard'])}</div>
-                        <div class="disaster-title">
-                            {html.escape(event['title'])}
-                        </div>
-                        <div class="disaster-meta">
-                            🕒 {html.escape(occurred_text)}
-                        </div>
-                        <div class="disaster-meta">
-                            📡 Source: {html.escape(event['source'])}
-                        </div>
-                        <div class="disaster-meta">
-                            📍 {html.escape(event['location'])}
-                        </div>
+                        <span class="hazard-tag">{hazard_text}</span>
+                        <div class="disaster-title">{title_text}</div>
+                        <div class="disaster-meta">Time: {time_text}</div>
+                        <div class="disaster-meta">Source: {source_text}</div>
+                        <div class="disaster-meta">Location: {location_text}</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
-                b1, b2 = st.columns(2)
-                with b1:
+                button_col1, button_col2 = st.columns(2)
+
+                with button_col1:
                     if st.button(
                         "View Details",
                         key=f"details_{event['id']}",
@@ -695,27 +849,27 @@ else:
                     ):
                         show_details(event)
 
-                with b2:
+                with button_col2:
                     st.link_button(
-                        "Official Record ↗",
+                        "Official Record",
                         event["source_url"],
                         use_container_width=True,
                     )
 
+
 # =========================================================
-# OFFICIAL SOURCES DIRECTORY
+# 12. OFFICIAL SOURCES DIRECTORY
 # =========================================================
 
 st.divider()
 st.subheader("Official Disaster Information")
 
 st.write(
-    "Use these official sources to verify casualty figures, missing persons, "
-    "property damage, warnings, and situation reports. Availability varies "
-    "by country and disaster."
+    "Open the official websites below to check government reports, "
+    "casualty figures, missing persons, damage assessments, and warnings."
 )
 
-source_tabs = st.tabs([
+source_tab_names = [
     "Global",
     "Earthquake",
     "Typhoon",
@@ -723,50 +877,49 @@ source_tabs = st.tabs([
     "Flood & Rain",
     "Other Hazards",
     "South Korea",
-])
-
-tab_groups = [
-    ["Global"],
-    ["Earthquake"],
-    ["Typhoon"],
-    ["Wildfire"],
-    ["Flood", "Heavy Rain"],
-    ["Drought", "Heavy Snow", "Heatwave", "Cold Wave", "Landslide"],
-    ["South Korea"],
 ]
 
-for tab, groups in zip(source_tabs, tab_groups):
-    with tab:
-        combined = {}
-        for group in groups:
-            combined.update(OFFICIAL_SOURCES.get(group, {}))
+source_tabs = st.tabs(source_tab_names)
 
-        cols = st.columns(2)
-        for i, (name, url) in enumerate(combined.items()):
-            with cols[i % 2]:
+for tab, group_name in zip(source_tabs, source_tab_names):
+    with tab:
+        sources = OFFICIAL_SOURCES.get(group_name, {})
+
+        if not sources:
+            st.info("No sources configured for this category.")
+            continue
+
+        source_columns = st.columns(2)
+
+        for index, (name, url) in enumerate(sources.items()):
+            with source_columns[index % 2]:
+                escaped_name = html.escape(name)
+                escaped_url = html.escape(url, quote=True)
+
                 st.markdown(
                     f"""
-                    <div class="source-box">
-                      <b>{html.escape(name)}</b><br>
-                      <span class="small-muted">
-                        Official disaster information
-                      </span><br>
-                      <a href="{html.escape(url, quote=True)}"
-                         target="_blank" rel="noopener noreferrer">
-                        Open official website ↗
-                      </a>
+                    <div class="source-card">
+                        <strong>{escaped_name}</strong><br>
+                        <span class="source-muted">
+                            Official information and reports
+                        </span><br><br>
+                        <a href="{escaped_url}" target="_blank"
+                           rel="noopener noreferrer">
+                           Open official website
+                        </a>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
+
 # =========================================================
-# FOOTER
+# 13. FOOTER
 # =========================================================
 
 st.divider()
+
 st.caption(
-    "WORLD DISASTER LIVE · Public data dashboard · "
-    "Event coverage is not exhaustive. Always follow local emergency "
-    "authorities and official warnings."
+    "WORLD DISASTER LIVE | Public information dashboard | "
+    "Coverage is not exhaustive. Follow official local emergency guidance."
 )

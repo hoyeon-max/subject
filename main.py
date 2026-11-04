@@ -6,14 +6,13 @@ from email.utils import parsedate_to_datetime
 from urllib.parse import urlencode
 import xml.etree.ElementTree as ET
 
-import pandas as pd
 import requests
 import streamlit as st
 
 
-# =========================================================
-# 1. APP CONFIG
-# =========================================================
+# =====================================================
+# 1. 기본 설정
+# =====================================================
 
 st.set_page_config(
     page_title="WORLD DISASTER LIVE",
@@ -23,8 +22,8 @@ st.set_page_config(
 )
 
 UTC = timezone.utc
-CURRENT_UTC = datetime.now(UTC)
-TODAY_UTC = CURRENT_UTC.date()
+NOW = datetime.now(UTC)
+TODAY = NOW.date()
 
 USGS_API = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 GDACS_RSS = "https://www.gdacs.org/xml/rss.xml"
@@ -41,6 +40,7 @@ HAZARDS = [
     "Heatwave",
     "Cold Wave",
     "Landslide",
+    "Disease",
 ]
 
 HAZARD_LABELS = {
@@ -55,6 +55,7 @@ HAZARD_LABELS = {
     "Heatwave": "🌡️ Heatwave",
     "Cold Wave": "🥶 Cold Wave",
     "Landslide": "⛰️ Landslide",
+    "Disease": "🦠 Disease",
 }
 
 OFFICIAL_SOURCES = {
@@ -86,139 +87,137 @@ OFFICIAL_SOURCES = {
     "Other Hazards": {
         "UNDRR": "https://www.undrr.org/",
         "WMO": "https://wmo.int/",
-        "WHO": "https://www.who.int/",
         "GDACS": "https://www.gdacs.org/",
     },
+    "Disease": {
+        "WHO Disease Outbreak News": "https://www.who.int/emergencies/disease-outbreak-news",
+        "WHO Health Emergency Dashboard": "https://extranet.who.int/publicemergency/",
+        "WHO Ongoing Health Emergencies": "https://www.who.int/emergencies/situations",
+        "CDC Current Outbreak List": "https://www.cdc.gov/outbreaks/",
+        "CDC Health Alert Network": "https://www.cdc.gov/han/",
+        "ECDC": "https://www.ecdc.europa.eu/en",
+    },
     "South Korea": {
-        "Ministry of the Interior and Safety": "https://www.mois.go.kr/",
+        "Korea Disease Control and Prevention Agency": "https://www.kdca.go.kr/",
+        "KDCA Infectious Disease Portal": "https://dportal.kdca.go.kr/",
+        "KDCA Disease Statistics Dashboard": "https://dportal.kdca.go.kr/pot/is/dashboardEDW.do",
         "Korea Meteorological Administration": "https://www.kma.go.kr/",
-        "Korea Public Data Portal": "https://www.data.go.kr/",
+        "Ministry of the Interior and Safety": "https://www.mois.go.kr/",
+        "Public Data Portal": "https://www.data.go.kr/",
     },
 }
 
 
-# =========================================================
-# 2. STYLE
-# =========================================================
+# =====================================================
+# 2. 화면 디자인
+# =====================================================
 
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background-color: #0f172a;
-        color: #e5e7eb;
-    }
+st.markdown("""
+<style>
+.stApp {
+    background-color: #0f172a;
+    color: #e5e7eb;
+}
 
-    header[data-testid="stHeader"] {
-        background-color: #0f172a;
-    }
+header[data-testid="stHeader"] {
+    background-color: #0f172a;
+}
 
-    .block-container {
-        max-width: 1500px;
-        padding-top: 1.4rem;
-        padding-bottom: 3rem;
-    }
+.block-container {
+    max-width: 1500px;
+    padding-top: 1.4rem;
+    padding-bottom: 3rem;
+}
 
-    h1, h2, h3, h4, p, label {
-        color: #e5e7eb;
-    }
+h1, h2, h3, h4, p, label {
+    color: #e5e7eb;
+}
 
-    [data-testid="stMetric"] {
-        background: #172238;
-        border: 1px solid #2a3a55;
-        border-radius: 12px;
-        padding: 16px;
-    }
+[data-testid="stMetric"] {
+    background: #172238;
+    border: 1px solid #2a3a55;
+    border-radius: 12px;
+    padding: 16px;
+}
 
-    .disaster-card {
-        background: #172238;
-        border: 1px solid #2a3a55;
-        border-radius: 14px;
-        padding: 18px;
-        min-height: 190px;
-        margin-bottom: 8px;
-        overflow-wrap: anywhere;
-    }
+.disaster-card {
+    background: #172238;
+    border: 1px solid #2a3a55;
+    border-radius: 14px;
+    padding: 18px;
+    min-height: 190px;
+    margin-bottom: 8px;
+    overflow-wrap: anywhere;
+}
 
-    .disaster-title {
-        font-size: 18px;
-        font-weight: 700;
-        line-height: 1.5;
-        margin: 8px 0 12px 0;
-        color: #f1f5f9;
-    }
+.disaster-title {
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.5;
+    margin: 8px 0 12px 0;
+    color: #f1f5f9;
+}
 
-    .disaster-meta {
-        font-size: 13px;
-        color: #b4c2d5;
-        margin: 6px 0;
-    }
+.disaster-meta {
+    font-size: 13px;
+    color: #b4c2d5;
+    margin: 6px 0;
+}
 
-    .hazard-tag {
-        display: inline-block;
-        background: #263750;
-        color: #bae6fd;
-        border-radius: 6px;
-        padding: 4px 8px;
-        font-size: 12px;
-    }
+.hazard-tag {
+    display: inline-block;
+    background: #263750;
+    color: #bae6fd;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+}
 
-    .source-card {
-        background: #172238;
-        border: 1px solid #2a3a55;
-        border-radius: 12px;
-        padding: 16px;
-        margin-bottom: 12px;
-        overflow-wrap: anywhere;
-    }
+.source-card {
+    background: #172238;
+    border: 1px solid #2a3a55;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 12px;
+    min-height: 105px;
+}
 
-    .source-muted {
-        color: #94a3b8;
-        font-size: 12px;
-    }
+.source-muted {
+    color: #94a3b8;
+    font-size: 12px;
+}
 
-    div.stButton > button {
-        border-radius: 8px;
-        min-height: 40px;
-        border: 1px solid #334766;
-    }
+div.stButton > button {
+    border-radius: 8px;
+    min-height: 40px;
+    border: 1px solid #334766;
+}
 
-    div[data-testid="stDialog"] {
-        background-color: #0f172a;
-    }
+a {
+    color: #7dd3fc !important;
+}
 
-    a {
-        color: #7dd3fc !important;
-    }
-
-    hr {
-        border-color: #2a3a55;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+hr {
+    border-color: #2a3a55;
+}
+</style>
+""", unsafe_allow_html=True)
 
 
-# =========================================================
-# 3. COMMON HELPERS
-# =========================================================
+# =====================================================
+# 3. 공통 함수
+# =====================================================
 
 def safe_text(value, default="Not available"):
-    """Convert a value into safe display text."""
     if value is None:
         return default
 
-    text = str(value).strip()
+    value = str(value).strip()
 
-    if not text:
-        return default
-
-    return text
+    return value if value else default
 
 
 def safe_url(value, fallback):
-    """Only allow HTTP and HTTPS links."""
     value = str(value or "").strip()
 
     if value.startswith("https://") or value.startswith("http://"):
@@ -230,8 +229,31 @@ def safe_url(value, fallback):
 def classify_hazard(text):
     text = (text or "").lower()
 
-    # More specific patterns are checked first.
     patterns = [
+        (
+            "Disease",
+            [
+                "disease outbreak",
+                "infectious disease",
+                "epidemic",
+                "pandemic",
+                "outbreak",
+                "ebola",
+                "mpox",
+                "monkeypox",
+                "cholera",
+                "measles",
+                "dengue",
+                "malaria",
+                "marburg",
+                "nipah",
+                "avian influenza",
+                "bird flu",
+                "hantavirus",
+                "mers",
+                "covid",
+            ],
+        ),
         ("Earthquake", ["earthquake", "seismic"]),
         (
             "Typhoon",
@@ -260,34 +282,12 @@ def classify_hazard(text):
     return "Other"
 
 
-def make_event_id(source, external_id):
-    return f"{source}:{external_id}"
-
-
 def parse_rss_date(value):
     if not value:
         return None
 
     try:
         parsed = parsedate_to_datetime(value.strip())
-
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-
-        return parsed.astimezone(UTC)
-
-    except (ValueError, TypeError, OverflowError):
-        return None
-
-
-def parse_iso_datetime(value):
-    if not value:
-        return None
-
-    try:
-        parsed = datetime.fromisoformat(
-            str(value).replace("Z", "+00:00")
-        )
 
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
@@ -306,13 +306,13 @@ def is_in_date_range(event_datetime, start_date, end_date):
 
 
 def get_official_sources(hazard):
-    """Select relevant official source links."""
-    source_groups = {
+    mapping = {
         "Earthquake": ["Earthquake", "Global"],
         "Typhoon": ["Typhoon", "Global"],
         "Wildfire": ["Wildfire", "Global"],
         "Flood": ["Flood & Rain", "Global"],
         "Heavy Rain": ["Flood & Rain", "Global"],
+        "Disease": ["Disease", "South Korea", "Global"],
         "Drought": ["Other Hazards", "Global"],
         "Heavy Snow": ["Other Hazards", "Global"],
         "Heatwave": ["Other Hazards", "Global"],
@@ -321,18 +321,17 @@ def get_official_sources(hazard):
         "Other": ["Global"],
     }
 
-    groups = source_groups.get(hazard, ["Global"])
-    results = {}
+    result = {}
 
-    for group in groups:
-        results.update(OFFICIAL_SOURCES.get(group, {}))
+    for group in mapping.get(hazard, ["Global"]):
+        result.update(OFFICIAL_SOURCES.get(group, {}))
 
-    return results
+    return result
 
 
-# =========================================================
-# 4. USGS EARTHQUAKE API
-# =========================================================
+# =====================================================
+# 4. USGS 지진 API
+# =====================================================
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_usgs(start_iso, end_iso):
@@ -353,11 +352,9 @@ def fetch_usgs(start_iso, end_iso):
     response.raise_for_status()
 
     payload = response.json()
-    features = payload.get("features", [])
-
     events = []
 
-    for item in features:
+    for item in payload.get("features", []):
         properties = item.get("properties") or {}
         geometry = item.get("geometry") or {}
         coordinates = geometry.get("coordinates") or []
@@ -375,10 +372,6 @@ def fetch_usgs(start_iso, end_iso):
         except (ValueError, TypeError, OverflowError, OSError):
             continue
 
-        magnitude = properties.get("mag")
-        place = safe_text(properties.get("place"), "Location not specified")
-        external_id = safe_text(item.get("id"), str(timestamp))
-
         latitude = None
         longitude = None
 
@@ -387,22 +380,23 @@ def fetch_usgs(start_iso, end_iso):
                 longitude = float(coordinates[0])
                 latitude = float(coordinates[1])
             except (ValueError, TypeError):
-                latitude = None
-                longitude = None
+                pass
 
-        event_url = safe_url(
-            properties.get("url"),
-            "https://earthquake.usgs.gov/earthquakes/map/",
-        )
+        magnitude = properties.get("mag")
+        place = safe_text(properties.get("place"), "Unknown location")
+        event_id = safe_text(item.get("id"), str(timestamp))
 
         events.append({
-            "id": make_event_id("USGS", external_id),
+            "id": f"USGS:{event_id}",
             "title": f"Earthquake - {place}",
             "hazard": "Earthquake",
             "location": place,
             "occurred": occurred,
             "source": "USGS",
-            "source_url": event_url,
+            "source_url": safe_url(
+                properties.get("url"),
+                "https://earthquake.usgs.gov/earthquakes/map/",
+            ),
             "magnitude": magnitude,
             "latitude": latitude,
             "longitude": longitude,
@@ -410,20 +404,18 @@ def fetch_usgs(start_iso, end_iso):
                 properties.get("title"),
                 "USGS earthquake observation.",
             ),
-            "status": "Official observation",
             "data_note": (
-                "USGS provides earthquake observations. This record alone "
-                "does not establish deaths, missing persons, or total "
-                "property damage."
+                "USGS earthquake observations do not provide a complete "
+                "global record of casualties or property damage."
             ),
         })
 
     return events
 
 
-# =========================================================
-# 5. GDACS PUBLIC RSS
-# =========================================================
+# =====================================================
+# 5. GDACS 재난 RSS
+# =====================================================
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_gdacs(start_iso, end_iso):
@@ -449,22 +441,28 @@ def fetch_gdacs(start_iso, end_iso):
 
         occurred = parse_rss_date(pub_date)
 
-        # Do not invent a date if the feed has no usable timestamp.
         if not is_in_date_range(occurred, start_date, end_date):
             continue
 
-        combined = f"{title} {description}"
-        hazard = classify_hazard(combined)
+        hazard = classify_hazard(f"{title} {description}")
 
         if hazard == "Other":
             continue
 
-        clean_description = re.sub(r"<[^>]*>", " ", description)
+        clean_description = re.sub(
+            r"<[^>]*>",
+            " ",
+            description,
+        )
         clean_description = html.unescape(clean_description)
-        clean_description = re.sub(r"\s+", " ", clean_description).strip()
+        clean_description = re.sub(
+            r"\s+",
+            " ",
+            clean_description,
+        ).strip()
 
         events.append({
-            "id": make_event_id("GDACS", safe_text(guid, title)),
+            "id": f"GDACS:{guid}",
             "title": html.unescape(safe_text(title, "Disaster alert")),
             "hazard": hazard,
             "location": "See original GDACS alert",
@@ -474,21 +472,19 @@ def fetch_gdacs(start_iso, end_iso):
             "magnitude": None,
             "latitude": None,
             "longitude": None,
-            "description": clean_description or "See the original alert.",
-            "status": "Official alert feed",
+            "description": clean_description or "See original alert.",
             "data_note": (
-                "GDACS alert records are not a complete standardized "
-                "register of casualties or property damage. Consult the "
-                "affected country's official disaster authority."
+                "This alert is not a complete standardized register "
+                "of casualties or property damage."
             ),
         })
 
     return events
 
 
-# =========================================================
-# 6. LOAD DATA WITH ERROR HANDLING
-# =========================================================
+# =====================================================
+# 6. 데이터 불러오기
+# =====================================================
 
 def load_events(start_date, end_date):
     start_iso = datetime.combine(
@@ -497,7 +493,6 @@ def load_events(start_date, end_date):
         tzinfo=UTC,
     ).isoformat()
 
-    # Use the start of the day after end_date as the exclusive endpoint.
     end_exclusive = datetime.combine(
         end_date + timedelta(days=1),
         time.min,
@@ -514,18 +509,20 @@ def load_events(start_date, end_date):
 
     try:
         events.extend(
-            fetch_gdacs(start_date.isoformat(), end_date.isoformat())
+            fetch_gdacs(
+                start_date.isoformat(),
+                end_date.isoformat(),
+            )
         )
     except Exception as exc:
         errors.append(f"GDACS: {type(exc).__name__}: {exc}")
 
-    # Remove duplicate IDs.
-    unique_events = {}
+    unique = {}
 
     for event in events:
-        unique_events[event["id"]] = event
+        unique[event["id"]] = event
 
-    result = list(unique_events.values())
+    result = list(unique.values())
 
     result.sort(
         key=lambda event: event["occurred"] or datetime.min.replace(tzinfo=UTC),
@@ -535,16 +532,16 @@ def load_events(start_date, end_date):
     return result, errors
 
 
-# =========================================================
-# 7. UTC CLOCK AND HEADER
-# =========================================================
+# =====================================================
+# 7. 상단 제목과 UTC 시계
+# =====================================================
 
-header_left, header_center, header_right = st.columns([2, 4, 2])
+left, center, right = st.columns([2, 4, 2])
 
-with header_left:
+with left:
     st.caption("GLOBAL HAZARD MONITOR")
 
-with header_center:
+with center:
     st.markdown(
         """
         <div style="text-align:center;font-size:29px;font-weight:800;
@@ -555,16 +552,19 @@ with header_center:
         unsafe_allow_html=True,
     )
 
-with header_right:
+with right:
     st.markdown(
-        f"<div style='text-align:right;color:#94a3b8;font-size:12px'>"
-        f"UTC DATE: {CURRENT_UTC.strftime('%Y-%m-%d')}</div>",
+        f"""
+        <div style="text-align:right;color:#94a3b8;font-size:12px">
+            UTC DATE: {NOW.strftime('%Y-%m-%d')}
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
 st.components.v1.html(
     """
-    <div style="text-align:center;font-family:Arial,sans-serif;padding:4px">
+    <div style="text-align:center;font-family:Arial;padding:4px">
         <div id="utc-clock"
              style="font-size:30px;font-weight:700;color:#7dd3fc">
             --:--:--
@@ -589,38 +589,30 @@ st.components.v1.html(
 st.divider()
 
 
-# =========================================================
-# 8. DATE FILTERS
-# =========================================================
+# =====================================================
+# 8. 날짜 및 재난 종류 선택
+# =====================================================
 
 st.subheader("Hazard Monitor")
 
-# Initialize widget state before creating date_input widgets.
 if "start_date" not in st.session_state:
-    st.session_state.start_date = TODAY_UTC - timedelta(days=6)
+    st.session_state.start_date = TODAY - timedelta(days=6)
 
 if "end_date" not in st.session_state:
-    st.session_state.end_date = TODAY_UTC
-
-# Keep dates within allowed bounds after the app stays open across days.
-if st.session_state.start_date > TODAY_UTC:
-    st.session_state.start_date = TODAY_UTC
-
-if st.session_state.end_date > TODAY_UTC:
-    st.session_state.end_date = TODAY_UTC
+    st.session_state.end_date = TODAY
 
 preset1, preset2, preset3 = st.columns([1, 1, 5])
 
 with preset1:
     if st.button("Last 7 days", use_container_width=True):
-        st.session_state.start_date = TODAY_UTC - timedelta(days=6)
-        st.session_state.end_date = TODAY_UTC
+        st.session_state.start_date = TODAY - timedelta(days=6)
+        st.session_state.end_date = TODAY
         st.rerun()
 
 with preset2:
     if st.button("Today", use_container_width=True):
-        st.session_state.start_date = TODAY_UTC
-        st.session_state.end_date = TODAY_UTC
+        st.session_state.start_date = TODAY
+        st.session_state.end_date = TODAY
         st.rerun()
 
 date_col1, date_col2 = st.columns(2)
@@ -629,14 +621,14 @@ with date_col1:
     start_date = st.date_input(
         "Start date (UTC)",
         key="start_date",
-        max_value=TODAY_UTC,
+        max_value=TODAY,
     )
 
 with date_col2:
     end_date = st.date_input(
         "End date (UTC)",
         key="end_date",
-        max_value=TODAY_UTC,
+        max_value=TODAY,
     )
 
 if start_date > end_date:
@@ -662,15 +654,15 @@ with refresh_col:
 with note_col:
     st.caption(
         "Sources: USGS earthquake observations and GDACS public alerts. "
-        "Data may be incomplete or delayed."
+        "Disease information is linked to official health authorities."
     )
 
 
-# =========================================================
-# 9. FETCH AND FILTER
-# =========================================================
+# =====================================================
+# 9. 데이터 표시
+# =====================================================
 
-with st.spinner("Loading official public data..."):
+with st.spinner("Loading public information..."):
     all_events, errors = load_events(start_date, end_date)
 
 if selected_hazard == "All":
@@ -698,23 +690,137 @@ metric3.metric("GDACS alerts", gdacs_count)
 if errors:
     with st.expander("Data source connection issues"):
         st.warning(
-            "Some data sources could not be reached. "
-            "The displayed event list may be incomplete."
+            "Some sources could not be reached. "
+            "Displayed information may be incomplete."
         )
 
         for error in errors:
             st.code(error)
 
 
-# =========================================================
-# 10. DETAILS DIALOG
-# =========================================================
+# =====================================================
+# 10. 질병 전용 공식 정보 영역
+# =====================================================
+
+def show_disease_portal():
+    st.subheader("🦠 Global Disease Monitor")
+
+    st.info(
+        "질병 정보는 WHO와 각국 보건당국의 공식 발표를 기준으로 "
+        "확인할 수 있어. 이 메뉴에서는 검증되지 않은 확진자나 "
+        "사망자 수를 임의로 표시하지 않아."
+    )
+
+    st.markdown("### International Health Authorities")
+
+    international_sources = [
+        (
+            "WHO Disease Outbreak News",
+            "WHO가 공개하는 국제적으로 중요한 질병 발생 보고",
+            "https://www.who.int/emergencies/disease-outbreak-news",
+        ),
+        (
+            "WHO Health Emergency Dashboard",
+            "진행 중인 국제 보건 비상사태와 공식 발표",
+            "https://extranet.who.int/publicemergency/",
+        ),
+        (
+            "WHO Ongoing Health Emergencies",
+            "WHO가 대응하는 주요 보건 비상사태",
+            "https://www.who.int/emergencies/situations",
+        ),
+        (
+            "CDC Current Outbreak List",
+            "미국 및 국제 감염병 발생 정보",
+            "https://www.cdc.gov/outbreaks/",
+        ),
+        (
+            "CDC Health Alert Network",
+            "미국 보건당국의 공식 보건 경보",
+            "https://www.cdc.gov/han/",
+        ),
+        (
+            "European CDC",
+            "유럽 질병예방통제센터의 감염병 감시 정보",
+            "https://www.ecdc.europa.eu/en",
+        ),
+    ]
+
+    for name, description, url in international_sources:
+        st.markdown(
+            f"""
+            <div class="source-card">
+                <b>{html.escape(name)}</b><br>
+                <span class="source-muted">
+                    {html.escape(description)}
+                </span><br><br>
+                <a href="{html.escape(url, quote=True)}"
+                   target="_blank" rel="noopener noreferrer">
+                    Open official website ↗
+                </a>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("### South Korea")
+
+    korea_sources = [
+        (
+            "KDCA Infectious Disease Portal",
+            "국내 감염병 발생 동향 및 감염병 정보",
+            "https://dportal.kdca.go.kr/",
+        ),
+        (
+            "KDCA Statistics Dashboard",
+            "국내 감염병 통계와 지역별·기간별 발생 현황",
+            "https://dportal.kdca.go.kr/pot/is/dashboardEDW.do",
+        ),
+        (
+            "KDCA Disease Information",
+            "질병관리청 공식 발표 및 예방 정보",
+            "https://www.kdca.go.kr/",
+        ),
+    ]
+
+    for name, description, url in korea_sources:
+        st.markdown(
+            f"""
+            <div class="source-card">
+                <b>{html.escape(name)}</b><br>
+                <span class="source-muted">
+                    {html.escape(description)}
+                </span><br><br>
+                <a href="{html.escape(url, quote=True)}"
+                   target="_blank" rel="noopener noreferrer">
+                    Open official website ↗
+                </a>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.caption(
+        "각 기관의 발표 시점, 통계 기준, 잠정치 여부를 확인해야 해. "
+        "기관마다 집계 기준이 다를 수 있어."
+    )
+
+
+if selected_hazard == "Disease":
+    show_disease_portal()
+    st.divider()
+
+
+# =====================================================
+# 11. 상세 정보 팝업
+# =====================================================
 
 @st.dialog("Disaster details", width="large")
 def show_details(event):
     st.markdown(f"### {event['title']}")
 
     occurred = event.get("occurred")
+
     occurred_text = (
         occurred.strftime("%Y-%m-%d %H:%M:%S UTC")
         if occurred
@@ -727,7 +833,6 @@ def show_details(event):
 
     st.markdown("#### Event information")
     st.write(f"**Location:** {event['location']}")
-    st.write(f"**Record type:** {event['status']}")
 
     magnitude = event.get("magnitude")
 
@@ -755,157 +860,150 @@ def show_details(event):
     st.markdown("#### Casualties and property damage")
 
     st.info(
-        "This dashboard does not estimate casualty figures or property "
-        "damage from headlines. Check the official reports from the "
-        "affected country's government or disaster-management agency."
+        "이 대시보드는 확인되지 않은 피해 수치를 추정하지 않아. "
+        "피해 통계는 해당 국가의 공식 재난관리기관 발표를 확인해 줘."
     )
 
-    st.write("**Deaths:** Not verified by this dashboard")
-    st.write("**Missing persons:** Not verified by this dashboard")
-    st.write("**Property damage:** Not verified by this dashboard")
+    st.write("**Deaths:** Not verified")
+    st.write("**Missing persons:** Not verified")
+    st.write("**Property damage:** Not verified")
 
     st.caption(event["data_note"])
 
-    st.markdown("#### Original record")
+    if event.get("description"):
+        st.markdown("#### Description")
+        st.write(event["description"])
+
+    st.markdown("#### Official sources")
 
     st.link_button(
-        f"Open {event['source']} record",
+        f"Open {event['source']} original record",
         event["source_url"],
         use_container_width=True,
     )
 
-    st.markdown("#### Related official sources")
-
-    source_links = get_official_sources(event["hazard"])
-
-    for name, url in source_links.items():
+    for name, url in get_official_sources(event["hazard"]).items():
         st.markdown(f"- [{name}]({url})")
 
-    st.caption(
-        "Official reports may be updated after the initial alert. "
-        "Check the report date and the latest revision."
-    )
 
+# =====================================================
+# 12. 재난 카드
+# =====================================================
 
-# =========================================================
-# 11. EVENT CARDS
-# =========================================================
+if selected_hazard != "Disease":
+    st.divider()
+    st.subheader("Disaster Events")
 
-st.divider()
-st.subheader("Disaster Events")
+    if not events:
+        st.info(
+            "No matching events were returned for this period. "
+            "This does not necessarily mean that no disaster occurred."
+        )
 
-if not events:
-    st.info(
-        "No matching events were returned for the selected period. "
-        "This does not necessarily mean that no disaster occurred."
-    )
+    else:
+        for row_start in range(0, len(events), 2):
+            columns = st.columns(2)
 
-else:
-    for row_start in range(0, len(events), 2):
-        card_columns = st.columns(2)
+            for offset, column in enumerate(columns):
+                index = row_start + offset
 
-        for offset, column in enumerate(card_columns):
-            index = row_start + offset
+                if index >= len(events):
+                    continue
 
-            if index >= len(events):
-                continue
+                event = events[index]
 
-            event = events[index]
+                with column:
+                    occurred = event.get("occurred")
 
-            with column:
-                occurred = event.get("occurred")
-                occurred_text = (
-                    occurred.strftime("%Y-%m-%d %H:%M UTC")
-                    if occurred
-                    else "Time unavailable"
-                )
-
-                hazard_text = html.escape(event["hazard"])
-                title_text = html.escape(event["title"])
-                source_text = html.escape(event["source"])
-                location_text = html.escape(event["location"])
-                time_text = html.escape(occurred_text)
-
-                st.markdown(
-                    f"""
-                    <div class="disaster-card">
-                        <span class="hazard-tag">{hazard_text}</span>
-                        <div class="disaster-title">{title_text}</div>
-                        <div class="disaster-meta">Time: {time_text}</div>
-                        <div class="disaster-meta">Source: {source_text}</div>
-                        <div class="disaster-meta">Location: {location_text}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                button_col1, button_col2 = st.columns(2)
-
-                with button_col1:
-                    if st.button(
-                        "View Details",
-                        key=f"details_{event['id']}",
-                        use_container_width=True,
-                    ):
-                        show_details(event)
-
-                with button_col2:
-                    st.link_button(
-                        "Official Record",
-                        event["source_url"],
-                        use_container_width=True,
+                    occurred_text = (
+                        occurred.strftime("%Y-%m-%d %H:%M UTC")
+                        if occurred
+                        else "Time unavailable"
                     )
 
+                    st.markdown(
+                        f"""
+                        <div class="disaster-card">
+                            <span class="hazard-tag">
+                                {html.escape(event['hazard'])}
+                            </span>
+                            <div class="disaster-title">
+                                {html.escape(event['title'])}
+                            </div>
+                            <div class="disaster-meta">
+                                Time: {html.escape(occurred_text)}
+                            </div>
+                            <div class="disaster-meta">
+                                Source: {html.escape(event['source'])}
+                            </div>
+                            <div class="disaster-meta">
+                                Location: {html.escape(event['location'])}
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
 
-# =========================================================
-# 12. OFFICIAL SOURCES DIRECTORY
-# =========================================================
+                    button1, button2 = st.columns(2)
+
+                    with button1:
+                        if st.button(
+                            "View Details",
+                            key=f"details_{event['id']}",
+                            use_container_width=True,
+                        ):
+                            show_details(event)
+
+                    with button2:
+                        st.link_button(
+                            "Official Record",
+                            event["source_url"],
+                            use_container_width=True,
+                        )
+
+
+# =====================================================
+# 13. 공식 기관 사이트 디렉터리
+# =====================================================
 
 st.divider()
-st.subheader("Official Disaster Information")
+st.subheader("Official Information Directory")
 
-st.write(
-    "Open the official websites below to check government reports, "
-    "casualty figures, missing persons, damage assessments, and warnings."
-)
-
-source_tab_names = [
+tab_names = [
     "Global",
     "Earthquake",
     "Typhoon",
     "Wildfire",
     "Flood & Rain",
     "Other Hazards",
+    "Disease",
     "South Korea",
 ]
 
-source_tabs = st.tabs(source_tab_names)
+tabs = st.tabs(tab_names)
 
-for tab, group_name in zip(source_tabs, source_tab_names):
+for tab, group_name in zip(tabs, tab_names):
     with tab:
         sources = OFFICIAL_SOURCES.get(group_name, {})
 
         if not sources:
-            st.info("No sources configured for this category.")
+            st.info("No sources configured.")
             continue
 
-        source_columns = st.columns(2)
+        columns = st.columns(2)
 
         for index, (name, url) in enumerate(sources.items()):
-            with source_columns[index % 2]:
-                escaped_name = html.escape(name)
-                escaped_url = html.escape(url, quote=True)
-
+            with columns[index % 2]:
                 st.markdown(
                     f"""
                     <div class="source-card">
-                        <strong>{escaped_name}</strong><br>
+                        <b>{html.escape(name)}</b><br>
                         <span class="source-muted">
                             Official information and reports
                         </span><br><br>
-                        <a href="{escaped_url}" target="_blank"
-                           rel="noopener noreferrer">
-                           Open official website
+                        <a href="{html.escape(url, quote=True)}"
+                           target="_blank" rel="noopener noreferrer">
+                            Open official website ↗
                         </a>
                     </div>
                     """,
@@ -913,13 +1011,14 @@ for tab, group_name in zip(source_tabs, source_tab_names):
                 )
 
 
-# =========================================================
-# 13. FOOTER
-# =========================================================
+# =====================================================
+# 14. 하단 안내
+# =====================================================
 
 st.divider()
 
 st.caption(
-    "WORLD DISASTER LIVE | Public information dashboard | "
-    "Coverage is not exhaustive. Follow official local emergency guidance."
+    "WORLD DISASTER LIVE | Global Disaster & Disease Monitor | "
+    "Public information dashboard | "
+    "Always follow official health and emergency authority guidance."
 )

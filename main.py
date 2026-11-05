@@ -1,29 +1,27 @@
 
-import html
-import re
-from datetime import date, datetime, time, timedelta, timezone
-from email.utils import parsedate_to_datetime
-from urllib.parse import urlencode
+import streamlit as st
+import requests
+import pandas as pd
 import xml.etree.ElementTree as ET
 
-import requests
-import streamlit as st
+from datetime import datetime, date, time, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from html import escape
+from urllib.parse import quote
 
 
-# =====================================================
-# 1. 기본 설정
-# =====================================================
+# =========================================================
+# 기본 설정
+# =========================================================
 
 st.set_page_config(
     page_title="WORLD DISASTER LIVE",
     page_icon="🌍",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded"
 )
 
 UTC = timezone.utc
-NOW = datetime.now(UTC)
-TODAY = NOW.date()
 
 USGS_API = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 GDACS_RSS = "https://www.gdacs.org/xml/rss.xml"
@@ -40,314 +38,391 @@ HAZARDS = [
     "Heatwave",
     "Cold Wave",
     "Landslide",
-    "Disease",
+    "Disease"
 ]
 
 HAZARD_LABELS = {
-    "All": "🌐 All",
-    "Typhoon": "🌀 Typhoon",
-    "Earthquake": "🌎 Earthquake",
-    "Wildfire": "🔥 Wildfire",
-    "Flood": "🌊 Flood",
-    "Heavy Rain": "🌧️ Heavy Rain",
-    "Drought": "☀️ Drought",
-    "Heavy Snow": "❄️ Heavy Snow",
-    "Heatwave": "🌡️ Heatwave",
-    "Cold Wave": "🥶 Cold Wave",
-    "Landslide": "⛰️ Landslide",
-    "Disease": "🦠 Disease",
+    "All": "ALL",
+    "Typhoon": "TYPHOON",
+    "Earthquake": "EARTHQUAKE",
+    "Wildfire": "WILDFIRE",
+    "Flood": "FLOOD",
+    "Heavy Rain": "HEAVY RAIN",
+    "Drought": "DROUGHT",
+    "Heavy Snow": "HEAVY SNOW",
+    "Heatwave": "HEATWAVE",
+    "Cold Wave": "COLD WAVE",
+    "Landslide": "LANDSLIDE",
+    "Disease": "DISEASE"
+}
+
+HAZARD_EMOJI = {
+    "Typhoon": "🌀",
+    "Earthquake": "🌎",
+    "Wildfire": "🔥",
+    "Flood": "🌊",
+    "Heavy Rain": "🌧️",
+    "Drought": "☀️",
+    "Heavy Snow": "❄️",
+    "Heatwave": "🌡️",
+    "Cold Wave": "🥶",
+    "Landslide": "⛰️",
+    "Disease": "🦠",
+    "Unknown": "⚠️"
 }
 
 OFFICIAL_SOURCES = {
-    "Global": {
-        "GDACS": "https://www.gdacs.org/",
-        "UNDRR": "https://www.undrr.org/",
-        "ReliefWeb": "https://reliefweb.int/",
-        "WMO": "https://wmo.int/",
-    },
-    "Earthquake": {
-        "USGS Earthquake Map": "https://earthquake.usgs.gov/earthquakes/map/",
-        "USGS Earthquake API": "https://earthquake.usgs.gov/fdsnws/event/1/",
-        "USGS Landslide Hazards": "https://www.usgs.gov/programs/landslide-hazards",
-    },
-    "Typhoon": {
-        "NOAA National Hurricane Center": "https://www.nhc.noaa.gov/",
-        "JTWC": "https://www.metoc.navy.mil/jtwc/jtwc.html",
-        "GDACS": "https://www.gdacs.org/",
-    },
-    "Wildfire": {
-        "NASA FIRMS": "https://firms.modaps.eosdis.nasa.gov/",
-        "Copernicus Emergency Management": "https://emergency.copernicus.eu/",
-    },
-    "Flood & Rain": {
-        "Copernicus Emergency Management": "https://emergency.copernicus.eu/",
-        "GDACS": "https://www.gdacs.org/",
-        "WMO": "https://wmo.int/",
-    },
-    "Other Hazards": {
-        "UNDRR": "https://www.undrr.org/",
-        "WMO": "https://wmo.int/",
-        "GDACS": "https://www.gdacs.org/",
-    },
-    "Disease": {
-        "WHO Disease Outbreak News": "https://www.who.int/emergencies/disease-outbreak-news",
-        "WHO Health Emergency Dashboard": "https://extranet.who.int/publicemergency/",
-        "WHO Ongoing Health Emergencies": "https://www.who.int/emergencies/situations",
-        "CDC Current Outbreak List": "https://www.cdc.gov/outbreaks/",
-        "CDC Health Alert Network": "https://www.cdc.gov/han/",
-        "ECDC": "https://www.ecdc.europa.eu/en",
-    },
-    "South Korea": {
-        "Korea Disease Control and Prevention Agency": "https://www.kdca.go.kr/",
-        "KDCA Infectious Disease Portal": "https://dportal.kdca.go.kr/",
-        "KDCA Disease Statistics Dashboard": "https://dportal.kdca.go.kr/pot/is/dashboardEDW.do",
-        "Korea Meteorological Administration": "https://www.kma.go.kr/",
-        "Ministry of the Interior and Safety": "https://www.mois.go.kr/",
-        "Public Data Portal": "https://www.data.go.kr/",
-    },
+    "Earthquake": [
+        ("USGS Earthquake Map", "https://earthquake.usgs.gov/earthquakes/map/"),
+        ("USGS Earthquake Search", "https://earthquake.usgs.gov/earthquakes/search/")
+    ],
+    "Typhoon": [
+        ("NOAA National Hurricane Center", "https://www.nhc.noaa.gov/"),
+        ("JTWC", "https://www.metoc.navy.mil/jtwc/jtwc.html"),
+        ("GDACS", "https://www.gdacs.org/")
+    ],
+    "Wildfire": [
+        ("NASA FIRMS", "https://firms.modaps.eosdis.nasa.gov/"),
+        ("Copernicus Emergency Management", "https://emergency.copernicus.eu/")
+    ],
+    "Flood": [
+        ("GDACS", "https://www.gdacs.org/"),
+        ("Copernicus Emergency Management", "https://emergency.copernicus.eu/")
+    ],
+    "Heavy Rain": [
+        ("GDACS", "https://www.gdacs.org/"),
+        ("NOAA", "https://www.noaa.gov/")
+    ],
+    "Drought": [
+        ("UNDRR", "https://www.undrr.org/"),
+        ("Copernicus", "https://climate.copernicus.eu/")
+    ],
+    "Heavy Snow": [
+        ("NOAA", "https://www.noaa.gov/"),
+        ("GDACS", "https://www.gdacs.org/")
+    ],
+    "Heatwave": [
+        ("WHO", "https://www.who.int/"),
+        ("WMO", "https://wmo.int/")
+    ],
+    "Cold Wave": [
+        ("NOAA", "https://www.noaa.gov/"),
+        ("WMO", "https://wmo.int/")
+    ],
+    "Landslide": [
+        ("NASA Landslide", "https://landslides.nasa.gov/"),
+        ("GDACS", "https://www.gdacs.org/")
+    ],
+    "Disease": [
+        ("WHO Disease Outbreak News", "https://www.who.int/emergencies/disease-outbreak-news"),
+        ("WHO Health Emergencies", "https://www.who.int/emergencies/situations"),
+        ("WHO Health Emergency Dashboard", "https://extranet.who.int/publicemergency/"),
+        ("CDC Current Outbreak List", "https://www.cdc.gov/outbreaks/"),
+        ("ECDC", "https://www.ecdc.europa.eu/en"),
+        ("KDCA 감염병 포털", "https://dportal.kdca.go.kr/")
+    ]
 }
 
+SOUTH_KOREA_SOURCES = [
+    ("질병관리청", "https://www.kdca.go.kr/"),
+    ("질병관리청 감염병 포털", "https://dportal.kdca.go.kr/"),
+    ("질병관리청 통계", "https://dportal.kdca.go.kr/pot/is/dashboardEDW.do"),
+    ("행정안전부", "https://www.mois.go.kr/"),
+    ("기상청", "https://www.weather.go.kr/"),
+    ("공공데이터포털", "https://www.data.go.kr/")
+]
 
-# =====================================================
-# 2. 화면 디자인
-# =====================================================
+
+# =========================================================
+# 디자인
+# =========================================================
 
 st.markdown("""
 <style>
-.stApp {
-    background-color: #0f172a;
-    color: #e5e7eb;
-}
+    @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700;800&display=swap');
 
-header[data-testid="stHeader"] {
-    background-color: #0f172a;
-}
+    .stApp {
+        background: #0f172a;
+        color: #e2e8f0;
+        font-family: 'Inter', sans-serif;
+    }
 
-.block-container {
-    max-width: 1500px;
-    padding-top: 1.4rem;
-    padding-bottom: 3rem;
-}
+    header[data-testid="stHeader"] {
+        background: rgba(15, 23, 42, 0.95);
+    }
 
-h1, h2, h3, h4, p, label {
-    color: #e5e7eb;
-}
+    section[data-testid="stSidebar"] {
+        background: #111c32;
+        border-right: 1px solid #26354e;
+    }
 
-[data-testid="stMetric"] {
-    background: #172238;
-    border: 1px solid #2a3a55;
-    border-radius: 12px;
-    padding: 16px;
-}
+    .main-title {
+        font-size: 34px;
+        font-weight: 800;
+        letter-spacing: 2px;
+        color: #f8fafc;
+        margin-bottom: 0;
+    }
 
-.disaster-card {
-    background: #172238;
-    border: 1px solid #2a3a55;
-    border-radius: 14px;
-    padding: 18px;
-    min-height: 190px;
-    margin-bottom: 8px;
-    overflow-wrap: anywhere;
-}
+    .sub-title {
+        color: #94a3b8;
+        font-size: 13px;
+        letter-spacing: 2px;
+        margin-top: 4px;
+    }
 
-.disaster-title {
-    font-size: 18px;
-    font-weight: 700;
-    line-height: 1.5;
-    margin: 8px 0 12px 0;
-    color: #f1f5f9;
-}
+    .section-title {
+        color: #cbd5e1;
+        font-size: 17px;
+        font-weight: 700;
+        margin-top: 22px;
+        margin-bottom: 12px;
+    }
 
-.disaster-meta {
-    font-size: 13px;
-    color: #b4c2d5;
-    margin: 6px 0;
-}
+    .event-card {
+        background: #17243a;
+        border: 1px solid #293b56;
+        border-radius: 12px;
+        padding: 17px;
+        margin-bottom: 12px;
+        min-height: 175px;
+    }
 
-.hazard-tag {
-    display: inline-block;
-    background: #263750;
-    color: #bae6fd;
-    border-radius: 6px;
-    padding: 4px 8px;
-    font-size: 12px;
-}
+    .event-type {
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 1.5px;
+        color: #60a5fa;
+    }
 
-.source-card {
-    background: #172238;
-    border: 1px solid #2a3a55;
-    border-radius: 12px;
-    padding: 16px;
-    margin-bottom: 12px;
-    min-height: 105px;
-}
+    .event-title {
+        font-size: 17px;
+        font-weight: 700;
+        color: #f1f5f9;
+        margin-top: 9px;
+        margin-bottom: 9px;
+        line-height: 1.4;
+    }
 
-.source-muted {
-    color: #94a3b8;
-    font-size: 12px;
-}
+    .event-info {
+        font-size: 12px;
+        color: #94a3b8;
+        line-height: 1.8;
+    }
 
-div.stButton > button {
-    border-radius: 8px;
-    min-height: 40px;
-    border: 1px solid #334766;
-}
+    .metric-card {
+        background: #17243a;
+        border: 1px solid #293b56;
+        border-radius: 10px;
+        padding: 16px;
+    }
 
-a {
-    color: #7dd3fc !important;
-}
+    .metric-label {
+        color: #94a3b8;
+        font-size: 12px;
+    }
 
-hr {
-    border-color: #2a3a55;
-}
+    .metric-value {
+        color: #f8fafc;
+        font-size: 25px;
+        font-weight: 800;
+        margin-top: 6px;
+    }
+
+    .source-box {
+        background: #17243a;
+        border: 1px solid #293b56;
+        border-radius: 10px;
+        padding: 15px;
+        margin-bottom: 10px;
+    }
+
+    .source-box a {
+        color: #60a5fa !important;
+        text-decoration: none;
+        font-size: 13px;
+    }
+
+    .notice {
+        background: #17243a;
+        border: 1px solid #334155;
+        border-radius: 9px;
+        padding: 13px;
+        color: #cbd5e1;
+        font-size: 13px;
+        line-height: 1.7;
+    }
+
+    div[data-testid="stButton"] button {
+        background: #1e293b;
+        color: #cbd5e1;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        font-weight: 700;
+    }
+
+    div[data-testid="stButton"] button:hover {
+        background: #2563eb;
+        color: white;
+        border-color: #3b82f6;
+    }
+
+    a {
+        color: #60a5fa;
+    }
+
+    footer {
+        visibility: hidden;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 
-# =====================================================
-# 3. 공통 함수
-# =====================================================
+# =========================================================
+# UTC 시계
+# =========================================================
 
-def safe_text(value, default="Not available"):
-    if value is None:
-        return default
+@st.fragment(run_every="1s")
+def show_utc_clock():
+    now = datetime.now(UTC)
 
-    value = str(value).strip()
+    left, center, right = st.columns([1, 2, 1])
 
-    return value if value else default
+    with left:
+        st.markdown(
+            f"<div style='color:#94a3b8;font-size:13px;padding-top:14px;'>"
+            f"{now.strftime('%Y-%m-%d')}</div>",
+            unsafe_allow_html=True
+        )
+
+    with center:
+        st.markdown(
+            f"""
+            <div style="text-align:center;">
+                <div style="font-family:'Roboto Mono';font-size:31px;
+                            font-weight:700;color:#60a5fa;">
+                    {now.strftime('%H:%M:%S')}
+                </div>
+                <div style="font-size:10px;letter-spacing:4px;color:#94a3b8;">
+                    UNIVERSAL TIME COORDINATED
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    with right:
+        st.markdown(
+            "<div style='text-align:right;color:#94a3b8;"
+            "font-size:12px;padding-top:14px;'>UTC</div>",
+            unsafe_allow_html=True
+        )
 
 
-def safe_url(value, fallback):
-    value = str(value or "").strip()
-
-    if value.startswith("https://") or value.startswith("http://"):
-        return value
-
-    return fallback
-
+# =========================================================
+# 데이터 분류
+# =========================================================
 
 def classify_hazard(text):
-    text = (text or "").lower()
+    text = str(text).lower()
 
-    patterns = [
-        (
-            "Disease",
-            [
-                "disease outbreak",
-                "infectious disease",
-                "epidemic",
-                "pandemic",
-                "outbreak",
-                "ebola",
-                "mpox",
-                "monkeypox",
-                "cholera",
-                "measles",
-                "dengue",
-                "malaria",
-                "marburg",
-                "nipah",
-                "avian influenza",
-                "bird flu",
-                "hantavirus",
-                "mers",
-                "covid",
-            ],
-        ),
-        ("Earthquake", ["earthquake", "seismic"]),
-        (
-            "Typhoon",
-            [
-                "tropical cyclone",
-                "typhoon",
-                "hurricane",
-                "cyclone",
-                "tropical storm",
-            ],
-        ),
-        ("Wildfire", ["wildfire", "wild fire", "forest fire"]),
-        ("Landslide", ["landslide", "mudslide"]),
-        ("Drought", ["drought"]),
-        ("Heatwave", ["heatwave", "heat wave", "extreme heat"]),
-        ("Cold Wave", ["cold wave", "cold spell", "extreme cold"]),
-        ("Heavy Snow", ["heavy snow", "snowstorm", "blizzard"]),
-        ("Flood", ["flood", "flash flood"]),
-        ("Heavy Rain", ["heavy rain", "extreme rainfall", "rainfall"]),
-    ]
+    patterns = {
+        "Typhoon": [
+            "typhoon", "hurricane", "cyclone", "tropical storm",
+            "tropical cyclone"
+        ],
+        "Earthquake": [
+            "earthquake", "seismic", "magnitude"
+        ],
+        "Wildfire": [
+            "wildfire", "forest fire", "bushfire"
+        ],
+        "Flood": [
+            "flood", "flash flood", "inundation"
+        ],
+        "Heavy Rain": [
+            "heavy rain", "rainfall", "monsoon", "precipitation"
+        ],
+        "Drought": [
+            "drought", "water scarcity"
+        ],
+        "Heavy Snow": [
+            "heavy snow", "snowstorm", "blizzard"
+        ],
+        "Heatwave": [
+            "heatwave", "extreme heat", "high temperature"
+        ],
+        "Cold Wave": [
+            "cold wave", "extreme cold", "cold spell"
+        ],
+        "Landslide": [
+            "landslide", "mudslide", "rockslide"
+        ]
+    }
 
-    for hazard, keywords in patterns:
+    for hazard, keywords in patterns.items():
         if any(keyword in text for keyword in keywords):
             return hazard
 
-    return "Other"
+    return "Unknown"
 
 
-def parse_rss_date(value):
-    if not value:
+# =========================================================
+# 날짜 처리
+# =========================================================
+
+def to_utc_datetime(value):
+    if value is None:
         return None
+
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
     try:
-        parsed = parsedate_to_datetime(value.strip())
-
+        parsed = parsedate_to_datetime(str(value))
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
-
         return parsed.astimezone(UTC)
+    except Exception:
+        pass
 
-    except (ValueError, TypeError, OverflowError):
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+    except Exception:
         return None
 
 
-def is_in_date_range(event_datetime, start_date, end_date):
-    if event_datetime is None:
-        return False
-
-    return start_date <= event_datetime.date() <= end_date
-
-
-def get_official_sources(hazard):
-    mapping = {
-        "Earthquake": ["Earthquake", "Global"],
-        "Typhoon": ["Typhoon", "Global"],
-        "Wildfire": ["Wildfire", "Global"],
-        "Flood": ["Flood & Rain", "Global"],
-        "Heavy Rain": ["Flood & Rain", "Global"],
-        "Disease": ["Disease", "South Korea", "Global"],
-        "Drought": ["Other Hazards", "Global"],
-        "Heavy Snow": ["Other Hazards", "Global"],
-        "Heatwave": ["Other Hazards", "Global"],
-        "Cold Wave": ["Other Hazards", "Global"],
-        "Landslide": ["Earthquake", "Global"],
-        "Other": ["Global"],
-    }
-
-    result = {}
-
-    for group in mapping.get(hazard, ["Global"]):
-        result.update(OFFICIAL_SOURCES.get(group, {}))
-
-    return result
-
-
-# =====================================================
-# 4. USGS 지진 API
-# =====================================================
+# =========================================================
+# USGS 지진 데이터
+# =========================================================
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_usgs(start_iso, end_iso):
+def load_usgs(start_date, end_date):
+    start_dt = datetime.combine(
+        start_date, time.min, tzinfo=UTC
+    )
+    end_dt = datetime.combine(
+        end_date + timedelta(days=1), time.min, tzinfo=UTC
+    )
+
     params = {
         "format": "geojson",
-        "starttime": start_iso,
-        "endtime": end_iso,
+        "starttime": start_dt.strftime("%Y-%m-%d"),
+        "endtime": end_dt.strftime("%Y-%m-%d"),
         "orderby": "time",
-        "limit": 500,
+        "limit": 20000
     }
 
     response = requests.get(
         USGS_API,
         params=params,
         timeout=25,
-        headers={"User-Agent": "WorldDisasterLive/1.0"},
+        headers={"User-Agent": "WorldDisasterLive/1.0"}
     )
     response.raise_for_status()
 
@@ -355,670 +430,629 @@ def fetch_usgs(start_iso, end_iso):
     events = []
 
     for item in payload.get("features", []):
-        properties = item.get("properties") or {}
-        geometry = item.get("geometry") or {}
+        properties = item.get("properties", {})
+        geometry = item.get("geometry", {})
+
         coordinates = geometry.get("coordinates") or []
+
+        if len(coordinates) < 2:
+            latitude = None
+            longitude = None
+        else:
+            longitude = coordinates[0]
+            latitude = coordinates[1]
 
         timestamp = properties.get("time")
 
-        if timestamp is None:
-            continue
-
-        try:
-            occurred = datetime.fromtimestamp(
-                float(timestamp) / 1000,
-                tz=UTC,
+        if timestamp is not None:
+            event_time = datetime.fromtimestamp(
+                timestamp / 1000,
+                tz=UTC
             )
-        except (ValueError, TypeError, OverflowError, OSError):
-            continue
-
-        latitude = None
-        longitude = None
-
-        if len(coordinates) >= 2:
-            try:
-                longitude = float(coordinates[0])
-                latitude = float(coordinates[1])
-            except (ValueError, TypeError):
-                pass
+        else:
+            event_time = None
 
         magnitude = properties.get("mag")
-        place = safe_text(properties.get("place"), "Unknown location")
-        event_id = safe_text(item.get("id"), str(timestamp))
+        place = properties.get("place") or "위치 정보 없음"
+
+        if magnitude is None:
+            magnitude_text = "규모 미확인"
+        else:
+            magnitude_text = f"M {magnitude:.1f}"
 
         events.append({
-            "id": f"USGS:{event_id}",
-            "title": f"Earthquake - {place}",
+            "id": item.get("id"),
             "hazard": "Earthquake",
+            "title": f"Earthquake - {magnitude_text}",
+            "description": place,
             "location": place,
-            "occurred": occurred,
-            "source": "USGS",
-            "source_url": safe_url(
-                properties.get("url"),
-                "https://earthquake.usgs.gov/earthquakes/map/",
-            ),
-            "magnitude": magnitude,
+            "time": event_time,
             "latitude": latitude,
             "longitude": longitude,
-            "description": safe_text(
-                properties.get("title"),
-                "USGS earthquake observation.",
-            ),
-            "data_note": (
-                "USGS earthquake observations do not provide a complete "
-                "global record of casualties or property damage."
-            ),
+            "magnitude": magnitude,
+            "source": "USGS",
+            "url": properties.get("url") or "https://earthquake.usgs.gov/",
+            "damage": "미확인"
         })
 
     return events
 
 
-# =====================================================
-# 5. GDACS 재난 RSS
-# =====================================================
+# =========================================================
+# GDACS RSS 데이터
+# =========================================================
+
+def get_xml_text(element, tag_names):
+    for tag in tag_names:
+        found = element.find(tag)
+        if found is not None and found.text:
+            return found.text.strip()
+
+    return ""
+
+
+def extract_gdacs_coordinates(item):
+    namespaces = {
+        "geo": "http://www.w3.org/2003/01/geo/wgs84_pos#",
+        "georss": "http://www.georss.org/georss"
+    }
+
+    latitude = None
+    longitude = None
+
+    try:
+        lat = item.find("geo:lat", namespaces)
+        lon = item.find("geo:long", namespaces)
+
+        if lat is not None and lon is not None:
+            latitude = float(lat.text)
+            longitude = float(lon.text)
+            return latitude, longitude
+    except Exception:
+        pass
+
+    try:
+        point = item.find("georss:point", namespaces)
+
+        if point is not None and point.text:
+            values = point.text.strip().split()
+
+            if len(values) >= 2:
+                latitude = float(values[0])
+                longitude = float(values[1])
+                return latitude, longitude
+    except Exception:
+        pass
+
+    try:
+        point = item.find("point")
+
+        if point is not None and point.text:
+            values = point.text.strip().split()
+
+            if len(values) >= 2:
+                latitude = float(values[0])
+                longitude = float(values[1])
+                return latitude, longitude
+    except Exception:
+        pass
+
+    return None, None
+
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_gdacs(start_iso, end_iso):
-    start_date = date.fromisoformat(start_iso)
-    end_date = date.fromisoformat(end_iso)
-
+def load_gdacs():
     response = requests.get(
         GDACS_RSS,
         timeout=25,
-        headers={"User-Agent": "WorldDisasterLive/1.0"},
+        headers={"User-Agent": "WorldDisasterLive/1.0"}
     )
     response.raise_for_status()
 
     root = ET.fromstring(response.content)
+
     events = []
 
     for item in root.findall(".//item"):
-        title = item.findtext("title", default="Disaster alert")
-        link = item.findtext("link", default="")
-        description = item.findtext("description", default="")
-        pub_date = item.findtext("pubDate", default="")
-        guid = item.findtext("guid", default=link or title)
+        title = get_xml_text(item, ["title"])
+        description = get_xml_text(item, ["description"])
+        link = get_xml_text(item, ["link"])
+        pub_date = get_xml_text(item, ["pubDate"])
 
-        occurred = parse_rss_date(pub_date)
+        event_time = to_utc_datetime(pub_date)
 
-        if not is_in_date_range(occurred, start_date, end_date):
+        latitude, longitude = extract_gdacs_coordinates(item)
+
+        combined_text = f"{title} {description}"
+        hazard = classify_hazard(combined_text)
+
+        if hazard == "Unknown":
             continue
-
-        hazard = classify_hazard(f"{title} {description}")
-
-        if hazard == "Other":
-            continue
-
-        clean_description = re.sub(
-            r"<[^>]*>",
-            " ",
-            description,
-        )
-        clean_description = html.unescape(clean_description)
-        clean_description = re.sub(
-            r"\s+",
-            " ",
-            clean_description,
-        ).strip()
 
         events.append({
-            "id": f"GDACS:{guid}",
-            "title": html.unescape(safe_text(title, "Disaster alert")),
+            "id": link or title,
             "hazard": hazard,
-            "location": "See original GDACS alert",
-            "occurred": occurred,
-            "source": "GDACS",
-            "source_url": safe_url(link, "https://www.gdacs.org/"),
+            "title": title or "재난 경보",
+            "description": description or "상세 설명이 제공되지 않았습니다.",
+            "location": "GDACS 제공 위치 정보",
+            "time": event_time,
+            "latitude": latitude,
+            "longitude": longitude,
             "magnitude": None,
-            "latitude": None,
-            "longitude": None,
-            "description": clean_description or "See original alert.",
-            "data_note": (
-                "This alert is not a complete standardized register "
-                "of casualties or property damage."
-            ),
+            "source": "GDACS",
+            "url": link or "https://www.gdacs.org/",
+            "damage": "미확인"
         })
 
     return events
 
 
-# =====================================================
-# 6. 데이터 불러오기
-# =====================================================
+# =========================================================
+# 데이터 합치기 및 필터링
+# =========================================================
 
-def load_events(start_date, end_date):
-    start_iso = datetime.combine(
-        start_date,
-        time.min,
-        tzinfo=UTC,
-    ).isoformat()
+def get_event_key(event):
+    source_id = event.get("id")
 
-    end_exclusive = datetime.combine(
-        end_date + timedelta(days=1),
-        time.min,
-        tzinfo=UTC,
-    ).isoformat()
+    if source_id:
+        return f"{event.get('source')}:{source_id}"
 
+    return (
+        f"{event.get('source')}:"
+        f"{event.get('title')}:"
+        f"{event.get('time')}"
+    )
+
+
+def collect_events(start_date, end_date):
     events = []
     errors = []
 
     try:
-        events.extend(fetch_usgs(start_iso, end_exclusive))
-    except Exception as exc:
-        errors.append(f"USGS: {type(exc).__name__}: {exc}")
+        events.extend(load_usgs(start_date, end_date))
+    except Exception as error:
+        errors.append(f"USGS 데이터 수집 실패: {error}")
 
     try:
-        events.extend(
-            fetch_gdacs(
-                start_date.isoformat(),
-                end_date.isoformat(),
-            )
-        )
-    except Exception as exc:
-        errors.append(f"GDACS: {type(exc).__name__}: {exc}")
+        events.extend(load_gdacs())
+    except Exception as error:
+        errors.append(f"GDACS 데이터 수집 실패: {error}")
 
-    unique = {}
-
+    unique_events = {}
     for event in events:
-        unique[event["id"]] = event
+        unique_events[get_event_key(event)] = event
 
-    result = list(unique.values())
+    filtered = []
 
-    result.sort(
-        key=lambda event: event["occurred"] or datetime.min.replace(tzinfo=UTC),
-        reverse=True,
+    start_dt = datetime.combine(start_date, time.min, tzinfo=UTC)
+    end_dt = datetime.combine(
+        end_date + timedelta(days=1),
+        time.min,
+        tzinfo=UTC
     )
 
-    return result, errors
+    for event in unique_events.values():
+        event_time = event.get("time")
 
+        if event_time is None:
+            continue
 
-# =====================================================
-# 7. 상단 제목과 UTC 시계
-# =====================================================
+        if start_dt <= event_time < end_dt:
+            filtered.append(event)
 
-left, center, right = st.columns([2, 4, 2])
-
-with left:
-    st.caption("GLOBAL HAZARD MONITOR")
-
-with center:
-    st.markdown(
-        """
-        <div style="text-align:center;font-size:29px;font-weight:800;
-                    letter-spacing:1.5px;">
-            WORLD DISASTER LIVE
-        </div>
-        """,
-        unsafe_allow_html=True,
+    filtered.sort(
+        key=lambda event: event["time"],
+        reverse=True
     )
 
-with right:
-    st.markdown(
-        f"""
-        <div style="text-align:right;color:#94a3b8;font-size:12px">
-            UTC DATE: {NOW.strftime('%Y-%m-%d')}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    return filtered, errors
 
-st.components.v1.html(
-    """
-    <div style="text-align:center;font-family:Arial;padding:4px">
-        <div id="utc-clock"
-             style="font-size:30px;font-weight:700;color:#7dd3fc">
-            --:--:--
-        </div>
-        <div style="font-size:11px;letter-spacing:2px;color:#94a3b8">
-            COORDINATED UNIVERSAL TIME (UTC)
-        </div>
-    </div>
-    <script>
-    function updateUTC() {
-        const clock = document.getElementById("utc-clock");
-        if (!clock) return;
-        clock.textContent = new Date().toISOString().slice(11, 19);
-    }
-    updateUTC();
-    setInterval(updateUTC, 1000);
-    </script>
-    """,
-    height=78,
+
+# =========================================================
+# 사이드바
+# =========================================================
+
+st.sidebar.markdown("## 🌍 WORLD DISASTER LIVE")
+st.sidebar.caption("GLOBAL DISASTER MONITORING")
+
+st.sidebar.divider()
+
+st.sidebar.markdown("### 재난 종류")
+
+selected_hazard = st.sidebar.radio(
+    "재난 분류",
+    HAZARDS,
+    format_func=lambda x: HAZARD_LABELS[x],
+    label_visibility="collapsed"
 )
+
+st.sidebar.divider()
+
+st.sidebar.markdown("### 조회 기간")
+
+today_utc = datetime.now(UTC).date()
+
+quick_period = st.sidebar.radio(
+    "빠른 기간 선택",
+    ["최근 7일", "오늘", "직접 선택"],
+    index=0
+)
+
+if quick_period == "오늘":
+    start_default = today_utc
+    end_default = today_utc
+elif quick_period == "최근 7일":
+    start_default = today_utc - timedelta(days=6)
+    end_default = today_utc
+else:
+    start_default = today_utc - timedelta(days=6)
+    end_default = today_utc
+
+start_date = st.sidebar.date_input(
+    "시작 날짜",
+    value=start_default,
+    max_value=today_utc,
+    key="start_date"
+)
+
+end_date = st.sidebar.date_input(
+    "종료 날짜",
+    value=end_default,
+    max_value=today_utc,
+    key="end_date"
+)
+
+if start_date > end_date:
+    st.sidebar.error("시작 날짜가 종료 날짜보다 늦을 수 없습니다.")
+    st.stop()
+
+if (end_date - start_date).days > 365:
+    st.sidebar.error("조회 기간은 최대 1년까지 선택할 수 있습니다.")
+    st.stop()
+
+if st.sidebar.button("↻ 데이터 새로고침", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
+
+st.sidebar.divider()
+
+st.sidebar.markdown("### 데이터 출처")
+st.sidebar.markdown(
+    "[USGS 지진 데이터](https://earthquake.usgs.gov/)"
+)
+st.sidebar.markdown(
+    "[GDACS 재난 경보](https://www.gdacs.org/)"
+)
+
+st.sidebar.caption(
+    "데이터 갱신 주기는 원본 기관의 제공 및 업데이트 주기에 따릅니다."
+)
+
+
+# =========================================================
+# 상단 제목
+# =========================================================
+
+st.markdown(
+    '<div class="main-title">WORLD DISASTER LIVE</div>',
+    unsafe_allow_html=True
+)
+st.markdown(
+    '<div class="sub-title">GLOBAL DISASTER MONITORING SYSTEM</div>',
+    unsafe_allow_html=True
+)
+
+st.write("")
+show_utc_clock()
+st.write("")
 
 st.divider()
 
 
-# =====================================================
-# 8. 날짜 및 재난 종류 선택
-# =====================================================
+# =========================================================
+# Disease 전용 공식 정보 페이지
+# =========================================================
 
-st.subheader("Hazard Monitor")
+if selected_hazard == "Disease":
+    st.markdown("## 🦠 DISEASE INFORMATION")
 
-if "start_date" not in st.session_state:
-    st.session_state.start_date = TODAY - timedelta(days=6)
+    st.markdown("""
+    <div class="notice">
+        질병 발생 정보는 국가와 기관별로 발표 시점 및 집계 기준이 다릅니다.
+        모든 국가의 감염병 발생 현황을 실시간으로 통합하는 공개 데이터는
+        제공되지 않으므로, 확인되지 않은 사건이나 환자 수를 임의로 표시하지 않습니다.
+        아래 공식 기관에서 확인된 최신 정보를 확인할 수 있습니다.
+    </div>
+    """, unsafe_allow_html=True)
 
-if "end_date" not in st.session_state:
-    st.session_state.end_date = TODAY
+    st.write("")
 
-preset1, preset2, preset3 = st.columns([1, 1, 5])
+    col1, col2 = st.columns(2)
 
-with preset1:
-    if st.button("Last 7 days", use_container_width=True):
-        st.session_state.start_date = TODAY - timedelta(days=6)
-        st.session_state.end_date = TODAY
-        st.rerun()
+    for index, (name, url) in enumerate(OFFICIAL_SOURCES["Disease"]):
+        target = col1 if index % 2 == 0 else col2
 
-with preset2:
-    if st.button("Today", use_container_width=True):
-        st.session_state.start_date = TODAY
-        st.session_state.end_date = TODAY
-        st.rerun()
+        with target:
+            st.markdown(
+                f"""
+                <div class="source-box">
+                    <div style="font-weight:700;color:#e2e8f0;">
+                        🦠 {escape(name)}
+                    </div>
+                    <a href="{escape(url)}" target="_blank">
+                        공식 자료 열기 ↗
+                    </a>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
-date_col1, date_col2 = st.columns(2)
+    st.write("")
+    st.markdown("### 대한민국 감염병 정보")
 
-with date_col1:
-    start_date = st.date_input(
-        "Start date (UTC)",
-        key="start_date",
-        max_value=TODAY,
+    for name, url in SOUTH_KOREA_SOURCES:
+        st.markdown(f"- [{name}]({url})")
+
+    st.info(
+        "WHO Disease Outbreak News는 모든 국가의 모든 감염병 사례를 "
+        "빠짐없이 수록하는 목록이 아닙니다."
     )
 
-with date_col2:
-    end_date = st.date_input(
-        "End date (UTC)",
-        key="end_date",
-        max_value=TODAY,
-    )
-
-if start_date > end_date:
-    st.error("Start date must be on or before end date.")
     st.stop()
 
-selected_hazard = st.radio(
-    "Filter by hazard",
-    HAZARDS,
-    horizontal=True,
-    format_func=lambda value: HAZARD_LABELS[value],
-    label_visibility="collapsed",
-)
 
-refresh_col, note_col = st.columns([1, 5])
+# =========================================================
+# 데이터 불러오기
+# =========================================================
 
-with refresh_col:
-    if st.button("Refresh data", use_container_width=True):
-        fetch_usgs.clear()
-        fetch_gdacs.clear()
-        st.rerun()
-
-with note_col:
-    st.caption(
-        "Sources: USGS earthquake observations and GDACS public alerts. "
-        "Disease information is linked to official health authorities."
-    )
+with st.spinner("공개 재난 데이터를 불러오는 중입니다..."):
+    all_events, load_errors = collect_events(start_date, end_date)
 
 
-# =====================================================
-# 9. 데이터 표시
-# =====================================================
-
-with st.spinner("Loading public information..."):
-    all_events, errors = load_events(start_date, end_date)
+# =========================================================
+# 재난 분류 필터
+# =========================================================
 
 if selected_hazard == "All":
-    events = all_events
+    visible_events = all_events
 else:
-    events = [
+    visible_events = [
         event for event in all_events
         if event["hazard"] == selected_hazard
     ]
 
+
+# =========================================================
+# 상단 통계
+# =========================================================
+
+total_count = len(all_events)
+visible_count = len(visible_events)
+
 earthquake_count = sum(
-    1 for event in events if event["hazard"] == "Earthquake"
+    1 for event in all_events
+    if event["hazard"] == "Earthquake"
 )
 
 gdacs_count = sum(
-    1 for event in events if event["source"] == "GDACS"
+    1 for event in all_events
+    if event["source"] == "GDACS"
 )
 
-metric1, metric2, metric3 = st.columns(3)
+metric1, metric2, metric3, metric4 = st.columns(4)
 
-metric1.metric("Events returned", len(events))
-metric2.metric("Earthquake observations", earthquake_count)
-metric3.metric("GDACS alerts", gdacs_count)
+metrics = [
+    ("전체 수집 사건", total_count),
+    ("현재 분류 사건", visible_count),
+    ("지진 사건", earthquake_count),
+    ("GDACS 경보", gdacs_count)
+]
 
-if errors:
-    with st.expander("Data source connection issues"):
-        st.warning(
-            "Some sources could not be reached. "
-            "Displayed information may be incomplete."
+for column, (label, value) in zip(
+    [metric1, metric2, metric3, metric4],
+    metrics
+):
+    with column:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="metric-label">{label}</div>
+                <div class="metric-value">{value:,}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
         )
 
-        for error in errors:
-            st.code(error)
+st.write("")
+
+if load_errors:
+    with st.expander("데이터 수집 상태 확인"):
+        for error in load_errors:
+            st.warning(error)
+
+st.markdown(
+    f'<div class="section-title">EVENT LIST · {HAZARD_LABELS[selected_hazard]}</div>',
+    unsafe_allow_html=True
+)
 
 
-# =====================================================
-# 10. 질병 전용 공식 정보 영역
-# =====================================================
+# =========================================================
+# 사건이 없는 경우
+# =========================================================
 
-def show_disease_portal():
-    st.subheader("🦠 Global Disease Monitor")
-
+if not visible_events:
     st.info(
-        "질병 정보는 WHO와 각국 보건당국의 공식 발표를 기준으로 "
-        "확인할 수 있어. 이 메뉴에서는 검증되지 않은 확진자나 "
-        "사망자 수를 임의로 표시하지 않아."
+        "선택한 기간과 분류에서 표시할 사건을 찾지 못했습니다. "
+        "원본 기관에 데이터가 없거나 해당 분류의 정보가 제공되지 않을 수 있습니다."
     )
 
-    st.markdown("### International Health Authorities")
 
-    international_sources = [
-        (
-            "WHO Disease Outbreak News",
-            "WHO가 공개하는 국제적으로 중요한 질병 발생 보고",
-            "https://www.who.int/emergencies/disease-outbreak-news",
-        ),
-        (
-            "WHO Health Emergency Dashboard",
-            "진행 중인 국제 보건 비상사태와 공식 발표",
-            "https://extranet.who.int/publicemergency/",
-        ),
-        (
-            "WHO Ongoing Health Emergencies",
-            "WHO가 대응하는 주요 보건 비상사태",
-            "https://www.who.int/emergencies/situations",
-        ),
-        (
-            "CDC Current Outbreak List",
-            "미국 및 국제 감염병 발생 정보",
-            "https://www.cdc.gov/outbreaks/",
-        ),
-        (
-            "CDC Health Alert Network",
-            "미국 보건당국의 공식 보건 경보",
-            "https://www.cdc.gov/han/",
-        ),
-        (
-            "European CDC",
-            "유럽 질병예방통제센터의 감염병 감시 정보",
-            "https://www.ecdc.europa.eu/en",
-        ),
-    ]
+# =========================================================
+# 사건 카드
+# =========================================================
 
-    for name, description, url in international_sources:
+for index, event in enumerate(visible_events):
+    hazard = event["hazard"]
+    emoji = HAZARD_EMOJI.get(hazard, "⚠️")
+
+    event_time = event["time"]
+
+    if event_time:
+        time_text = event_time.strftime("%Y-%m-%d %H:%M UTC")
+    else:
+        time_text = "발생 시각 미확인"
+
+    title = escape(str(event["title"]))
+    description = escape(str(event["description"]))
+    source = escape(str(event["source"]))
+
+    magnitude_text = ""
+    if event.get("magnitude") is not None:
+        magnitude_text = f" · 규모 M {event['magnitude']:.1f}"
+
+    left, right = st.columns([5, 1])
+
+    with left:
         st.markdown(
             f"""
-            <div class="source-card">
-                <b>{html.escape(name)}</b><br>
-                <span class="source-muted">
-                    {html.escape(description)}
-                </span><br><br>
-                <a href="{html.escape(url, quote=True)}"
-                   target="_blank" rel="noopener noreferrer">
-                    Open official website ↗
-                </a>
+            <div class="event-card">
+                <div class="event-type">
+                    {emoji} {escape(HAZARD_LABELS.get(hazard, hazard))}
+                    &nbsp; | &nbsp; {source}
+                </div>
+                <div class="event-title">{title}</div>
+                <div class="event-info">
+                    📍 {escape(str(event["location"]))}<br>
+                    🕒 {time_text}{magnitude_text}<br>
+                    피해 통계: 미확인
+                </div>
             </div>
             """,
-            unsafe_allow_html=True,
+            unsafe_allow_html=True
         )
 
-    st.markdown("### South Korea")
-
-    korea_sources = [
-        (
-            "KDCA Infectious Disease Portal",
-            "국내 감염병 발생 동향 및 감염병 정보",
-            "https://dportal.kdca.go.kr/",
-        ),
-        (
-            "KDCA Statistics Dashboard",
-            "국내 감염병 통계와 지역별·기간별 발생 현황",
-            "https://dportal.kdca.go.kr/pot/is/dashboardEDW.do",
-        ),
-        (
-            "KDCA Disease Information",
-            "질병관리청 공식 발표 및 예방 정보",
-            "https://www.kdca.go.kr/",
-        ),
-    ]
-
-    for name, description, url in korea_sources:
+    with right:
+        st.write("")
         st.markdown(
-            f"""
-            <div class="source-card">
-                <b>{html.escape(name)}</b><br>
-                <span class="source-muted">
-                    {html.escape(description)}
-                </span><br><br>
-                <a href="{html.escape(url, quote=True)}"
-                   target="_blank" rel="noopener noreferrer">
-                    Open official website ↗
-                </a>
-            </div>
-            """,
-            unsafe_allow_html=True,
+            f'<a href="{escape(str(event["url"]))}" target="_blank">'
+            f'<span style="font-size:13px;">원본 자료 ↗</span></a>',
+            unsafe_allow_html=True
         )
 
-    st.caption(
-        "각 기관의 발표 시점, 통계 기준, 잠정치 여부를 확인해야 해. "
-        "기관마다 집계 기준이 다를 수 있어."
-    )
+    with st.expander("상세 정보 보기"):
+        st.markdown(f"**재난 종류:** {HAZARD_LABELS.get(hazard, hazard)}")
+        st.markdown(f"**사건명:** {event['title']}")
+        st.markdown(f"**설명:** {event['description']}")
+        st.markdown(f"**출처:** {event['source']}")
+        st.markdown(f"**발생 시각:** {time_text}")
+
+        if event.get("magnitude") is not None:
+            st.markdown(
+                f"**지진 규모:** M {event['magnitude']:.1f}"
+            )
+
+        latitude = event.get("latitude")
+        longitude = event.get("longitude")
+
+        if latitude is not None and longitude is not None:
+            st.markdown(
+                f"**위도:** {latitude:.4f} / "
+                f"**경도:** {longitude:.4f}"
+            )
+
+            map_df = pd.DataFrame({
+                "lat": [latitude],
+                "lon": [longitude]
+            })
+
+            st.map(map_df, zoom=5)
+
+        else:
+            st.caption("이 사건은 지도 좌표가 제공되지 않았습니다.")
+
+        st.markdown(
+            f"[원본 기관 자료 확인하기]({event['url']})"
+        )
+
+    st.write("")
 
 
-if selected_hazard == "Disease":
-    show_disease_portal()
-    st.divider()
+# =========================================================
+# 전체 사건 지도
+# =========================================================
 
+st.divider()
+st.markdown("## 🗺️ GLOBAL EVENT MAP")
 
-# =====================================================
-# 11. 상세 정보 팝업
-# =====================================================
+map_events = []
 
-@st.dialog("Disaster details", width="large")
-def show_details(event):
-    st.markdown(f"### {event['title']}")
-
-    occurred = event.get("occurred")
-
-    occurred_text = (
-        occurred.strftime("%Y-%m-%d %H:%M:%S UTC")
-        if occurred
-        else "Time unavailable"
-    )
-
-    st.caption(
-        f"{event['hazard']} | {event['source']} | {occurred_text}"
-    )
-
-    st.markdown("#### Event information")
-    st.write(f"**Location:** {event['location']}")
-
-    magnitude = event.get("magnitude")
-
-    if event["hazard"] == "Earthquake" and magnitude is not None:
-        st.write(f"**Magnitude:** {magnitude}")
-
+for event in visible_events:
     latitude = event.get("latitude")
     longitude = event.get("longitude")
 
-    if latitude is not None and longitude is not None:
-        st.markdown("#### Coordinates")
-        st.code(f"Latitude: {latitude}\nLongitude: {longitude}")
+    if latitude is None or longitude is None:
+        continue
 
-        map_url = (
-            "https://www.google.com/maps?"
-            + urlencode({"q": f"{latitude},{longitude}"})
-        )
+    map_events.append({
+        "lat": latitude,
+        "lon": longitude
+    })
 
-        st.link_button(
-            "Open map",
-            map_url,
-            use_container_width=True,
-        )
+if map_events:
+    map_df = pd.DataFrame(map_events)
 
-    st.markdown("#### Casualties and property damage")
+    st.map(
+        map_df,
+        zoom=None,
+        use_container_width=True
+    )
 
+    st.caption(
+        f"지도에 표시된 사건: {len(map_events)}건 "
+        "/ 좌표가 제공된 사건만 표시합니다."
+    )
+else:
     st.info(
-        "이 대시보드는 확인되지 않은 피해 수치를 추정하지 않아. "
-        "피해 통계는 해당 국가의 공식 재난관리기관 발표를 확인해 줘."
+        "현재 선택한 분류에서 지도에 표시할 수 있는 좌표 정보가 없습니다."
     )
 
-    st.write("**Deaths:** Not verified")
-    st.write("**Missing persons:** Not verified")
-    st.write("**Property damage:** Not verified")
 
-    st.caption(event["data_note"])
-
-    if event.get("description"):
-        st.markdown("#### Description")
-        st.write(event["description"])
-
-    st.markdown("#### Official sources")
-
-    st.link_button(
-        f"Open {event['source']} original record",
-        event["source_url"],
-        use_container_width=True,
-    )
-
-    for name, url in get_official_sources(event["hazard"]).items():
-        st.markdown(f"- [{name}]({url})")
-
-
-# =====================================================
-# 12. 재난 카드
-# =====================================================
-
-if selected_hazard != "Disease":
-    st.divider()
-    st.subheader("Disaster Events")
-
-    if not events:
-        st.info(
-            "No matching events were returned for this period. "
-            "This does not necessarily mean that no disaster occurred."
-        )
-
-    else:
-        for row_start in range(0, len(events), 2):
-            columns = st.columns(2)
-
-            for offset, column in enumerate(columns):
-                index = row_start + offset
-
-                if index >= len(events):
-                    continue
-
-                event = events[index]
-
-                with column:
-                    occurred = event.get("occurred")
-
-                    occurred_text = (
-                        occurred.strftime("%Y-%m-%d %H:%M UTC")
-                        if occurred
-                        else "Time unavailable"
-                    )
-
-                    st.markdown(
-                        f"""
-                        <div class="disaster-card">
-                            <span class="hazard-tag">
-                                {html.escape(event['hazard'])}
-                            </span>
-                            <div class="disaster-title">
-                                {html.escape(event['title'])}
-                            </div>
-                            <div class="disaster-meta">
-                                Time: {html.escape(occurred_text)}
-                            </div>
-                            <div class="disaster-meta">
-                                Source: {html.escape(event['source'])}
-                            </div>
-                            <div class="disaster-meta">
-                                Location: {html.escape(event['location'])}
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-                    button1, button2 = st.columns(2)
-
-                    with button1:
-                        if st.button(
-                            "View Details",
-                            key=f"details_{event['id']}",
-                            use_container_width=True,
-                        ):
-                            show_details(event)
-
-                    with button2:
-                        st.link_button(
-                            "Official Record",
-                            event["source_url"],
-                            use_container_width=True,
-                        )
-
-
-# =====================================================
-# 13. 공식 기관 사이트 디렉터리
-# =====================================================
+# =========================================================
+# 공식 기관 정보
+# =========================================================
 
 st.divider()
-st.subheader("Official Information Directory")
+st.markdown("## 🌐 OFFICIAL INFORMATION")
 
-tab_names = [
-    "Global",
-    "Earthquake",
-    "Typhoon",
-    "Wildfire",
-    "Flood & Rain",
-    "Other Hazards",
-    "Disease",
-    "South Korea",
-]
+if selected_hazard == "All":
+    source_groups = OFFICIAL_SOURCES
+else:
+    source_groups = {
+        selected_hazard: OFFICIAL_SOURCES.get(selected_hazard, [])
+    }
 
-tabs = st.tabs(tab_names)
+for group_name, sources in source_groups.items():
+    if not sources:
+        continue
 
-for tab, group_name in zip(tabs, tab_names):
-    with tab:
-        sources = OFFICIAL_SOURCES.get(group_name, {})
-
-        if not sources:
-            st.info("No sources configured.")
-            continue
-
-        columns = st.columns(2)
-
-        for index, (name, url) in enumerate(sources.items()):
-            with columns[index % 2]:
-                st.markdown(
-                    f"""
-                    <div class="source-card">
-                        <b>{html.escape(name)}</b><br>
-                        <span class="source-muted">
-                            Official information and reports
-                        </span><br><br>
-                        <a href="{html.escape(url, quote=True)}"
-                           target="_blank" rel="noopener noreferrer">
-                            Open official website ↗
-                        </a>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+    with st.expander(
+        f"{HAZARD_LABELS.get(group_name, group_name)} 공식 기관"
+    ):
+        for name, url in sources:
+            st.markdown(f"- [{name}]({url})")
 
 
-# =====================================================
-# 14. 하단 안내
-# =====================================================
+# =========================================================
+# 하단 안내
+# =========================================================
 
 st.divider()
 
-st.caption(
-    "WORLD DISASTER LIVE | Global Disaster & Disease Monitor | "
-    "Public information dashboard | "
-    "Always follow official health and emergency authority guidance."
-)
+st.markdown("""
+<div style="text-align:center;color:#64748b;font-size:11px;line-height:2;">
+    WORLD DISASTER LIVE<br>
+    DATA SOURCES: USGS · GDACS · OFFICIAL GOVERNMENT AGENCIES<br>
+    피해 통계는 공식 출처에서 확인되지 않으면 표시하지 않습니다.<br>
+    본 대시보드는 재난 정보 확인을 위한 참고용 서비스입니다.
+</div>
+""", unsafe_allow_html=True)
